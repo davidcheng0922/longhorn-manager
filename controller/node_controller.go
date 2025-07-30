@@ -364,6 +364,13 @@ func (nc *NodeController) syncNode(key string) (err error) {
 	log := getLoggerForNode(nc.logger, node)
 
 	if node.DeletionTimestamp != nil {
+		// If V2 engine is enabled, we must clean up SPDK-related drivers (e.g., lvolstore and AIO bdev)
+		// before deleting the node. This ensures that SPDK devices can be reused on future node joins.
+		if err := nc.cleanupDisksBeforeNodeDeletion(node); err != nil {
+			nc.logger.WithError(err).Errorf("Cleanup spdk disk driver")
+			return err
+		}
+
 		nc.eventRecorder.Eventf(node, corev1.EventTypeWarning, constant.EventReasonDelete, "Deleting node %v", node.Name)
 		return nc.ds.RemoveFinalizerForNode(node)
 	}
@@ -1602,6 +1609,42 @@ func (nc *NodeController) deleteDisk(diskType longhorn.DiskType, diskName, diskU
 
 	if err := monitor.DeleteDisk(diskType, diskName, diskUUID, diskPath, diskDriver, diskServiceClient); err != nil {
 		return errors.Wrapf(err, "failed to delete disk %v", diskName)
+	}
+
+	return nil
+}
+
+func (nc *NodeController) cleanupDisksBeforeNodeDeletion(node *longhorn.Node) error {
+	isV2DataEngine, err := nc.ds.GetSettingAsBool(types.SettingNameV2DataEngine)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get v2 data engine setting")
+	}
+
+	if !isV2DataEngine {
+		return nil
+	}
+
+	for diskName, diskInfo := range node.Spec.Disks {
+		// Skip non-SPDK disks
+		if diskInfo.DiskDriver == "" {
+			continue
+		}
+
+		// Retrieve disk status
+		diskStatus, ok := node.Status.DiskStatus[diskName]
+		if !ok {
+			nc.logger.Infof("Disk %s exists in spec but is missing from status. Skipping SPDK cleanup.", diskName)
+			continue
+		}
+
+		diskInstanceName := diskStatus.DiskName
+		if diskInstanceName == "" {
+			diskInstanceName = diskName
+		}
+
+		if err := nc.deleteDisk(diskStatus.Type, diskInstanceName, diskStatus.DiskUUID, diskStatus.DiskPath, string(diskStatus.DiskDriver)); err != nil {
+			return errors.Wrapf(err, "failed to delete SPDK disk %v during node cleanup", diskInstanceName)
+		}
 	}
 
 	return nil
