@@ -75,7 +75,7 @@ require (
 	github.com/longhorn/longhorn-engine v1.11.0-dev-20251130.0.20251207134944-819147eb34d2
 	github.com/longhorn/longhorn-instance-manager v1.11.0-dev-20251130.0.20251209091223-c9c9640f1991
 	github.com/longhorn/longhorn-share-manager v1.9.2
-	github.com/longhorn/longhorn-spdk-engine v0.0.0-20251211073105-08609c16d3d1
+	github.com/longhorn/longhorn-spdk-engine v0.0.0-20251217153732-58e01286ab16
 	github.com/prometheus/client_golang v1.23.2
 	// dynamiclistener v0.7.1 has nil pointer dereference issues, so temporarily pin to v0.7.0
 	github.com/rancher/dynamiclistener v0.7.3
@@ -217,3 +217,7 @@ require (
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/longhorn/longhorn-spdk-engine => github.com/davidcheng0922/longhorn-spdk-engine v0.0.0-20251218095157-757699ae5fdd
+
+replace github.com/longhorn/longhorn-instance-manager => github.com/davidcheng0922/longhorn-instance-manager v0.0.0-20251218100024-b32a9b8283f7

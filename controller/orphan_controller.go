@@ -638,8 +638,7 @@ func (oc *OrphanController) checkOrphanedReplicaDataCleanable(node *longhorn.Nod
 
 	disk := node.Spec.Disks[diskName]
 
-	if diskName != orphan.Spec.Parameters[longhorn.OrphanDiskName] ||
-		disk.Path != orphan.Spec.Parameters[longhorn.OrphanDiskPath] {
+	if diskName != orphan.Spec.Parameters[longhorn.OrphanDiskName] || disk.Path != orphan.Spec.Parameters[longhorn.OrphanDiskPath] {
 		return longhorn.OrphanConditionTypeDataCleanableReasonDiskChanged
 	}
 

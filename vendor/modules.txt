@@ -288,7 +288,7 @@ github.com/longhorn/longhorn-engine/pkg/meta
 github.com/longhorn/longhorn-engine/pkg/replica/client
 github.com/longhorn/longhorn-engine/pkg/types
 github.com/longhorn/longhorn-engine/pkg/util
-# github.com/longhorn/longhorn-instance-manager v1.11.0-dev-20251130.0.20251209091223-c9c9640f1991
+# github.com/longhorn/longhorn-instance-manager v1.11.0-dev-20251130.0.20251209091223-c9c9640f1991 => github.com/davidcheng0922/longhorn-instance-manager v0.0.0-20251218100024-b32a9b8283f7
 ## explicit; go 1.25.3
 github.com/longhorn/longhorn-instance-manager/pkg/api
 github.com/longhorn/longhorn-instance-manager/pkg/client
@@ -299,7 +299,7 @@ github.com/longhorn/longhorn-instance-manager/pkg/util
 ## explicit; go 1.24.0
 github.com/longhorn/longhorn-share-manager/pkg/client
 github.com/longhorn/longhorn-share-manager/pkg/types
-# github.com/longhorn/longhorn-spdk-engine v0.0.0-20251211073105-08609c16d3d1
+# github.com/longhorn/longhorn-spdk-engine v0.0.0-20251217153732-58e01286ab16 => github.com/davidcheng0922/longhorn-spdk-engine v0.0.0-20251218095157-757699ae5fdd
 ## explicit; go 1.25.3
 github.com/longhorn/longhorn-spdk-engine/pkg/api
 github.com/longhorn/longhorn-spdk-engine/pkg/client
@@ -1373,3 +1373,5 @@ sigs.k8s.io/yaml/kyaml
 # k8s.io/sample-apiserver => k8s.io/sample-apiserver v0.34.3
 # k8s.io/sample-cli-plugin => k8s.io/sample-cli-plugin v0.34.3
 # k8s.io/sample-controller => k8s.io/sample-controller v0.34.3
+# github.com/longhorn/longhorn-spdk-engine => github.com/davidcheng0922/longhorn-spdk-engine v0.0.0-20251218095157-757699ae5fdd
+# github.com/longhorn/longhorn-instance-manager => github.com/davidcheng0922/longhorn-instance-manager v0.0.0-20251218100024-b32a9b8283f7
