@@ -35,6 +35,7 @@ import (
 	imutil "github.com/longhorn/longhorn-instance-manager/pkg/util"
 
 	"github.com/longhorn/longhorn-manager/constant"
+	"github.com/longhorn/longhorn-manager/controller/monitor"
 	"github.com/longhorn/longhorn-manager/datastore"
 	"github.com/longhorn/longhorn-manager/engineapi"
 	"github.com/longhorn/longhorn-manager/scheduler"
@@ -53,6 +54,8 @@ var (
 	AutoSalvageTimeLimit = 1 * time.Minute
 
 	UnstableNodeReadyTimeThreshold = 30 * time.Minute
+
+	snapshotOnDemandEventRequeueInterval = time.Minute * 3
 )
 
 const (
@@ -90,6 +93,9 @@ type VolumeController struct {
 	nowHandler func() string
 
 	proxyConnCounter util.Counter
+
+	snapshotEventQueue *monitor.SnapshotEventQueue
+	snapshotOnDmandMap map[string]time.Time
 }
 
 func NewVolumeController(
@@ -100,6 +106,7 @@ func NewVolumeController(
 	namespace,
 	controllerID, shareManagerImage string,
 	proxyConnCounter util.Counter,
+	snapshotEventQueue *monitor.SnapshotEventQueue,
 ) (*VolumeController, error) {
 
 	eventBroadcaster := record.NewBroadcaster()
@@ -123,6 +130,9 @@ func NewVolumeController(
 		nowHandler: util.Now,
 
 		proxyConnCounter: proxyConnCounter,
+
+		snapshotEventQueue: snapshotEventQueue,
+		snapshotOnDmandMap: map[string]time.Time{},
 	}
 
 	c.scheduler = scheduler.NewReplicaScheduler(ds)
@@ -543,6 +553,10 @@ func (c *VolumeController) syncVolume(key string) (err error) {
 	}
 
 	if err := c.cleanupReplicas(volume, engines, replicas); err != nil {
+		return err
+	}
+
+	if err := c.syncOnDemandChecksumCalculation(volume, snapshots); err != nil {
 		return err
 	}
 
@@ -5346,4 +5360,80 @@ func (c *VolumeController) shouldCleanUpFailedReplica(v *longhorn.Volume, r *lon
 		return true
 	}
 	return false
+}
+
+func (c *VolumeController) syncOnDemandChecksumCalculation(v *longhorn.Volume, snapshots map[string]*longhorn.Snapshot) (err error) {
+	if v.Spec.OnDemandChecksumRequestedAt == "" {
+		return nil
+	}
+
+	if len(snapshots) == 0 {
+		return nil
+	}
+
+	requestTime, err := util.ParseTime(v.Spec.OnDemandChecksumRequestedAt)
+	if err != nil {
+		return errors.Wrapf(err, "failed to parse OnDemandChecksumRequestedAt %v", v.Spec.OnDemandChecksumRequestedAt)
+	}
+
+	lastRequestTime, err := util.ParseTime(v.Status.LastOnDemandChecksumCompletedAt)
+	if err != nil {
+		return errors.Wrapf(err, "failed to parse LastOnDemandChecksumCompletedAt %v", v.Status.LastOnDemandChecksumCompletedAt)
+	}
+
+	if !requestTime.After(lastRequestTime) {
+		// already processed
+		return nil
+	}
+
+	// Lock the snapshot event queue to avoid
+	c.snapshotEventQueue.Lock.Lock()
+	defer c.snapshotEventQueue.Lock.Unlock()
+
+	// Calculate checksum for snapshots without checksum
+	allSnapshotsCalculated := true
+	for _, snapshot := range snapshots {
+		if snapshot.Status.Checksum == "" {
+			allSnapshotsCalculated = false
+			break
+		}
+	}
+
+	if allSnapshotsCalculated {
+		v.Status.LastOnDemandChecksumCompletedAt = util.Now()
+		c.snapshotOnDmandMap = map[string]time.Time{}
+		return nil
+	}
+
+	for _, snapshot := range snapshots {
+		key := fmt.Sprintf("%s/%s", v.Name, snapshot.Name)
+
+		// Snapshot already hashed → clear tracking record
+		if snapshot.Status.Checksum != "" {
+			delete(c.snapshotOnDmandMap, key)
+			continue
+		}
+
+		// Even though SnapshotMonitor can safely ignore duplicate tasks, we still
+		// rate-limit enqueueing to avoid queue flooding. If this snapshot was queued
+		// recently (within the debounce interval), skip adding another event.
+		lastRequestTime, alreadyQueued := c.snapshotOnDmandMap[key]
+		if alreadyQueued && time.Since(lastRequestTime) < snapshotOnDemandEventRequeueInterval {
+			c.logger.Debugf("Skipping enqueueing on-demand snapshot hash event for volume %v, snapshot %v due to debounce interval", v.Name, snapshot.Name)
+			continue
+		}
+
+		if c.snapshotEventQueue.Queue.Len() < snapshotChangeEventQueueMax {
+			c.snapshotEventQueue.Queue.Add(monitor.SnapshotChangeEvent{
+				VolumeName:   v.Name,
+				SnapshotName: snapshot.Name,
+			})
+			c.snapshotOnDmandMap[key] = time.Now()
+			c.logger.Infof("Enqueued on-demand snapshot hash event for volume %v, snapshot %v", v.Name, snapshot.Name)
+		} else {
+			c.logger.Warnf("Dropped on-demand snapshot hash event for volume %v due to full queue", v.Name)
+		}
+	}
+
+	return nil
 }

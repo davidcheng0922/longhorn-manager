@@ -61,6 +61,18 @@ type SnapshotMonitorStatus struct {
 	LastSnapshotPeriodicCheckedAt metav1.Time
 }
 
+type SnapshotEventQueue struct {
+	Queue workqueue.TypedInterface[any]
+	Lock  *sync.Mutex
+}
+
+func NewSnapshotEventQueue() *SnapshotEventQueue {
+	return &SnapshotEventQueue{
+		Queue: workqueue.NewTyped[any](),
+		Lock:  &sync.Mutex{},
+	}
+}
+
 type SnapshotMonitor struct {
 	sync.RWMutex
 	*baseMonitor

@@ -243,8 +243,10 @@ func TimestampAfterDuration(d time.Duration) string {
 }
 
 func ParseTime(t string) (time.Time, error) {
+	if t == "" {
+		return time.Time{}, nil
+	}
 	return time.Parse(time.RFC3339, t)
-
 }
 
 func TimestampAfterTimeout(ts string, timeout time.Duration) bool {

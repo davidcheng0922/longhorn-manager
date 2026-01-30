@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/kubernetes/pkg/controller"
 
 	corev1 "k8s.io/api/core/v1"
@@ -21,6 +23,7 @@ import (
 
 	imutil "github.com/longhorn/longhorn-instance-manager/pkg/util"
 
+	"github.com/longhorn/longhorn-manager/controller/monitor"
 	"github.com/longhorn/longhorn-manager/datastore"
 	"github.com/longhorn/longhorn-manager/types"
 	"github.com/longhorn/longhorn-manager/util"
@@ -58,7 +61,11 @@ func newTestVolumeController(lhClient *lhfake.Clientset, kubeClient *fake.Client
 
 	logger := logrus.StandardLogger()
 
-	vc, err := NewVolumeController(logger, ds, scheme.Scheme, kubeClient, TestNamespace, controllerID, TestShareManagerImage, proxyConnCounter)
+	snapshotEventQueue := &monitor.SnapshotEventQueue{
+		Queue: workqueue.NewTyped[any](),
+		Lock:  &sync.Mutex{},
+	}
+	vc, err := NewVolumeController(logger, ds, scheme.Scheme, kubeClient, TestNamespace, controllerID, TestShareManagerImage, proxyConnCounter, snapshotEventQueue)
 	if err != nil {
 		return nil, err
 	}

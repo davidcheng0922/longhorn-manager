@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -14,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/kubernetes/pkg/controller"
 
 	corev1 "k8s.io/api/core/v1"
@@ -61,9 +59,8 @@ type NodeController struct {
 	diskMonitor             monitor.Monitor
 	environmentCheckMonitor monitor.Monitor
 
-	snapshotMonitor              monitor.Monitor
-	snapshotChangeEventQueue     workqueue.TypedInterface[any]
-	snapshotChangeEventQueueLock sync.Mutex
+	snapshotMonitor    monitor.Monitor
+	snapshotEventQueue *monitor.SnapshotEventQueue
 
 	ds *datastore.DataStore
 
@@ -81,7 +78,9 @@ func NewNodeController(
 	ds *datastore.DataStore,
 	scheme *runtime.Scheme,
 	kubeClient clientset.Interface,
-	namespace, controllerID, instanceManagerImage string) (*NodeController, error) {
+	namespace, controllerID, instanceManagerImage string,
+	snapshotEventQueue *monitor.SnapshotEventQueue,
+) (*NodeController, error) {
 
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(logrus.Infof)
@@ -102,7 +101,7 @@ func NewNodeController(
 
 		topologyLabelsChecker: util.IsKubernetesVersionAtLeast,
 
-		snapshotChangeEventQueue: workqueue.NewTyped[any](),
+		snapshotEventQueue: snapshotEventQueue,
 	}
 
 	nc.scheduler = scheduler.NewReplicaScheduler(ds)
@@ -607,12 +606,12 @@ func (nc *NodeController) enqueueSnapshot(old, cur interface{}) {
 		return
 	}
 
-	nc.snapshotChangeEventQueueLock.Lock()
-	defer nc.snapshotChangeEventQueueLock.Unlock()
+	nc.snapshotEventQueue.Lock.Lock()
+	defer nc.snapshotEventQueue.Lock.Unlock()
 	// To avoid the snapshot events run out of the system memory, just ignore
 	// the events. The events will be processed in following periodic rounds.
-	if nc.snapshotChangeEventQueue.Len() < snapshotChangeEventQueueMax {
-		nc.snapshotChangeEventQueue.Add(monitor.SnapshotChangeEvent{
+	if nc.snapshotEventQueue.Queue.Len() < snapshotChangeEventQueueMax {
+		nc.snapshotEventQueue.Queue.Add(monitor.SnapshotChangeEvent{
 			VolumeName:   volume.Name,
 			SnapshotName: currentSnapshot.Name,
 		})
@@ -1744,7 +1743,7 @@ func (nc *NodeController) createSnapshotMonitor() (mon monitor.Monitor, err erro
 		return nc.snapshotMonitor, nil
 	}
 
-	mon, err = monitor.NewSnapshotMonitor(nc.logger, nc.ds, nc.controllerID, nc.eventRecorder, nc.snapshotChangeEventQueue, nc.enqueueNodeForMonitor)
+	mon, err = monitor.NewSnapshotMonitor(nc.logger, nc.ds, nc.controllerID, nc.eventRecorder, nc.snapshotEventQueue.Queue, nc.enqueueNodeForMonitor)
 	if err != nil {
 		return nil, err
 	}

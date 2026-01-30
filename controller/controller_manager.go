@@ -14,6 +14,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/longhorn/longhorn-manager/controller/monitor"
 	"github.com/longhorn/longhorn-manager/datastore"
 	"github.com/longhorn/longhorn-manager/engineapi"
 	"github.com/longhorn/longhorn-manager/types"
@@ -39,6 +40,7 @@ func StartControllers(logger logrus.FieldLogger, clients *client.Clients,
 	scheme := clients.Scheme
 	stopCh := clients.StopCh
 
+	snapshotEventQueue := monitor.NewSnapshotEventQueue()
 	// Longhorn controllers
 	replicaController, err := NewReplicaController(logger, ds, scheme, kubeClient, namespace, controllerID)
 	if err != nil {
@@ -48,7 +50,7 @@ func StartControllers(logger logrus.FieldLogger, clients *client.Clients,
 	if err != nil {
 		return nil, err
 	}
-	volumeController, err := NewVolumeController(logger, ds, scheme, kubeClient, namespace, controllerID, shareManagerImage, proxyConnCounter)
+	volumeController, err := NewVolumeController(logger, ds, scheme, kubeClient, namespace, controllerID, shareManagerImage, proxyConnCounter, snapshotEventQueue)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +58,7 @@ func StartControllers(logger logrus.FieldLogger, clients *client.Clients,
 	if err != nil {
 		return nil, err
 	}
-	nodeController, err := NewNodeController(logger, ds, scheme, kubeClient, namespace, controllerID, instanceManagerImage)
+	nodeController, err := NewNodeController(logger, ds, scheme, kubeClient, namespace, controllerID, instanceManagerImage, snapshotEventQueue)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 	. "gopkg.in/check.v1"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/kubernetes/pkg/controller"
 
 	corev1 "k8s.io/api/core/v1"
@@ -2383,7 +2385,11 @@ func newTestNodeController(lhClient *lhfake.Clientset, kubeClient *fake.Clientse
 	ds := datastore.NewDataStore(TestNamespace, lhClient, kubeClient, extensionsClient, informerFactories)
 
 	logger := logrus.StandardLogger()
-	nc, err := NewNodeController(logger, ds, scheme.Scheme, kubeClient, TestNamespace, controllerID, TestInstanceManagerImage)
+	snapshotEventQueue := &monitor.SnapshotEventQueue{
+		Queue: workqueue.NewTyped[any](),
+		Lock:  &sync.Mutex{},
+	}
+	nc, err := NewNodeController(logger, ds, scheme.Scheme, kubeClient, TestNamespace, controllerID, TestInstanceManagerImage, snapshotEventQueue)
 	if err != nil {
 		return nil, err
 	}
