@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -394,6 +395,13 @@ func (s *DataStore) GetAllLonghornCustomResourceDefinitions() (runtime.Object, e
 // GetConfigMapWithoutCache return a new ConfigMap via Kubernetes client object for the given namespace and name
 func (s *DataStore) GetConfigMapWithoutCache(namespace, name string) (*corev1.ConfigMap, error) {
 	return s.kubeClient.CoreV1().ConfigMaps(s.namespace).Get(context.TODO(), name, metav1.GetOptions{})
+}
+
+// GetLeaseWithoutCache returns a Lease directly from the API server, bypassing
+// the informer cache. Use this when strong consistency is required (e.g.
+// optimistic-concurrency lock operations).
+func (s *DataStore) GetLeaseWithoutCache(name string) (*coordinationv1.Lease, error) {
+	return s.kubeClient.CoordinationV1().Leases(s.namespace).Get(context.TODO(), name, metav1.GetOptions{})
 }
 
 // GetLonghornSnapshotUncached returns the uncached Snapshot in the Longhorn namespace directly from the API server.

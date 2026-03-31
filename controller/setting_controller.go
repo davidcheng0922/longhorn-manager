@@ -1743,6 +1743,7 @@ func (info *ClusterInfo) collectSettings() error {
 		types.SettingNameEngineReplicaTimeout:                                     true,
 		types.SettingNameFailedBackupTTL:                                          true,
 		types.SettingNameFastReplicaRebuildEnabled:                                true,
+		types.SettingNameTakeSnapshotBeforeV2DataEngineUpgrade:                    true,
 		types.SettingNameGuaranteedInstanceManagerCPU:                             true,
 		types.SettingNameKubernetesClusterAutoscalerEnabled:                       true,
 		types.SettingNameNodeDownPodDeletionPolicy:                                true,

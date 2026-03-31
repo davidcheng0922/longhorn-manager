@@ -280,6 +280,16 @@ func (rcs *ReplicaScheduler) getNodeCandidates(nodes map[string]*longhorn.Node, 
 			continue
 		}
 
+		if types.IsDataEngineV2(schedulingReplica.Spec.DataEngine) {
+			if upgrading, err := rcs.isNodeUnderInstanceManagerUpgrade(node.Name); err != nil {
+				log.WithError(err).Errorf("Failed to check if node %v has an active instance manager upgrade", node.Name)
+				continue
+			} else if upgrading {
+				log.Debugf("Excluding node %v from candidates because it has an active instance manager upgrade", node.Name)
+				continue
+			}
+		}
+
 		nodeCandidates[node.Name] = node
 	}
 
@@ -290,6 +300,29 @@ func (rcs *ReplicaScheduler) getNodeCandidates(nodes map[string]*longhorn.Node, 
 	}
 
 	return nodeCandidates, errs
+}
+
+// isNodeUnderInstanceManagerUpgrade returns true if there is an active (non-terminal)
+// InstanceManagerUpgrade targeting the given node.
+func (rcs *ReplicaScheduler) isNodeUnderInstanceManagerUpgrade(nodeID string) (bool, error) {
+	imuList, err := rcs.ds.ListInstanceManagerUpgradesRO()
+	if err != nil {
+		return false, err
+	}
+	for _, imu := range imuList {
+		if imu.Spec.NodeID != nodeID {
+			continue
+		}
+		switch imu.Status.State {
+		case "", longhorn.InstanceManagerUpgradeStatePending,
+			longhorn.InstanceManagerUpgradeStateCompleted,
+			longhorn.InstanceManagerUpgradeStateFailed:
+			// terminal or not yet started — not actively upgrading
+		default:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // getDiskCandidates returns a map of the most appropriate disks a replica can be scheduled to (assuming it can be

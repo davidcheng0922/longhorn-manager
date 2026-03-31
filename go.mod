@@ -67,14 +67,14 @@ require (
 	github.com/henrygd/beszel v0.18.2
 	github.com/jinzhu/copier v0.4.0
 	github.com/kubernetes-csi/csi-lib-utils v0.23.2
-	github.com/longhorn/backing-image-manager v1.12.0-dev-20260419.0.20260419095453-27efdbdca692
+	github.com/longhorn/backing-image-manager v1.12.0-dev-20260222
 	github.com/longhorn/backupstore v0.0.0-20260414054550-8570535ce7ad
-	github.com/longhorn/go-common-libs v0.0.0-20260330053112-1eb5d5e4dc8c
-	github.com/longhorn/go-iscsi-helper v0.0.0-20260331100542-4c4c6f91525b
+	github.com/longhorn/go-common-libs v0.0.0-20260328134226-cafa38fc4ce8
+	github.com/longhorn/go-iscsi-helper v0.0.0-20260327125832-d1a62805e28f
 	github.com/longhorn/go-spdk-helper v0.5.1-0.20260416023608-49b12f8b468b
 	github.com/longhorn/longhorn-engine v1.12.0-dev-20260405
-	github.com/longhorn/longhorn-instance-manager v1.12.0-dev-20260419.0.20260420101314-f2f06b49e43a
-	github.com/longhorn/longhorn-share-manager v1.12.0-dev-20260405.0.20260405084132-5e4bdb843e52
+	github.com/longhorn/longhorn-instance-manager v1.12.0-dev-20260222
+	github.com/longhorn/longhorn-share-manager v1.12.0-dev-20260222
 	github.com/longhorn/longhorn-spdk-engine v0.0.0-20260420061538-8ea1811c69c3
 	github.com/prometheus/client_golang v1.23.2
 	// dynamiclistener v0.7.1 has nil pointer dereference issues, so temporarily pin to v0.7.0
@@ -93,14 +93,14 @@ require (
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.35.3
-	k8s.io/apiextensions-apiserver v0.35.3
+	k8s.io/apiextensions-apiserver v0.35.2
 	k8s.io/apimachinery v0.35.3
-	k8s.io/cli-runtime v0.35.3
+	k8s.io/cli-runtime v0.35.2
 	k8s.io/client-go v0.35.3
-	k8s.io/kubernetes v1.35.3
-	k8s.io/metrics v0.35.3
+	k8s.io/kubernetes v1.35.2
+	k8s.io/metrics v0.35.2
 	k8s.io/mount-utils v0.35.4
-	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2
 )
@@ -227,3 +227,7 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/longhorn/longhorn-instance-manager => ../longhorn-instance-manager
+
+replace github.com/longhorn/longhorn-spdk-engine => ../longhorn-spdk-engine

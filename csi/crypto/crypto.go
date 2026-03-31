@@ -138,7 +138,6 @@ func EncryptVolume(devicePath, passphrase string, cryptoParams *EncryptParams) e
 		PBKDFForceIterations: cryptoParams.GetPBKDFForceIterations(),
 		PBKDFMemory:          cryptoParams.GetPBKDFMemory(),
 	}
-
 	if _, err := nsexec.LuksFormat(devicePath, passphrase, options, lhtypes.LuksTimeout); err != nil {
 		return errors.Wrapf(err, "failed to encrypt device %s with LUKS", devicePath)
 	}
