@@ -7196,7 +7196,7 @@ func (s *DataStore) GetAllDiskUUIDFirstFourChar() (map[string]bool, error) {
 	return firstFourCharSet, nil
 }
 
-func (s *DataStore) GetDataEngineObject(engine *longhorn.Engine) (interface{}, error) {
+func (s *DataStore) GetDataEngineObject(engine *longhorn.Engine) (longhorn.DataEngineObject, error) {
 	if types.IsDataEngineV2(engine.Spec.DataEngine) {
 		return s.GetVolumeCurrentEngineFrontend(engine.Spec.VolumeName)
 	}

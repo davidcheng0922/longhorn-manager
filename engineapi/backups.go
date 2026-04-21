@@ -322,21 +322,21 @@ func (btc *BackupTargetClient) BackupCleanUpAllMounts() (err error) {
 
 // SnapshotBackup calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotBackup(obj interface{}, snapName, backupName, backupTarget,
+func (e *EngineBinary) SnapshotBackup(obj DataEngineObject, snapName, backupName, backupTarget,
 	backingImageName, backingImageChecksum, compressionMethod string, concurrentLimit int, storageClassName string,
 	labels, credential, parameters map[string]string) (string, string, error) {
 	if snapName == etypes.VolumeHeadName {
 		return "", "", fmt.Errorf("invalid operation: cannot backup %v", etypes.VolumeHeadName)
 	}
 	// TODO: update when replacing this function
-	snap, err := e.SnapshotGet(nil, snapName)
+	snap, err := e.SnapshotGet(obj, snapName)
 	if err != nil {
 		return "", "", errors.Wrapf(err, "error getting snapshot '%s', volume '%s'", snapName, e.volumeName)
 	}
 	if snap == nil {
 		return "", "", errors.Errorf("could not find snapshot '%s' to backup, volume '%s'", snapName, e.volumeName)
 	}
-	version, err := e.VersionGet(nil, true)
+	version, err := e.VersionGet(obj, true)
 	if err != nil {
 		return "", "", err
 	}
@@ -378,7 +378,7 @@ func (e *EngineBinary) SnapshotBackup(obj interface{}, snapName, backupName, bac
 
 // SnapshotBackupStatus calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotBackupStatus(obj interface{}, backupName, replicaAddress,
+func (e *EngineBinary) SnapshotBackupStatus(obj DataEngineObject, backupName, replicaAddress,
 	replicaName string) (*longhorn.EngineBackupStatus, error) {
 	args := []string{"backup", "status", backupName}
 	if replicaAddress != "" {

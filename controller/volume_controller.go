@@ -4421,7 +4421,7 @@ func (c *VolumeController) checkAndInitVolumeClone(v *longhorn.Volume, e *longho
 		snapshotName = util.DeterministicUUID(string(sourceVol.GetUID()) + string(v.GetUID()))
 		labels := map[string]string{types.GetLonghornLabelKey(types.LonghornLabelSnapshotForCloningVolume): v.Name}
 
-		var sourceObj interface{} = sourceEngine
+		var sourceObj engineapi.DataEngineObject = sourceEngine
 		if types.IsDataEngineV2(sourceVol.Spec.DataEngine) {
 			sourceEngineFrontend, err := c.ds.GetVolumeCurrentEngineFrontend(sourceVolName)
 			if err != nil {
@@ -6260,7 +6260,7 @@ func (c *VolumeController) ReconcileBackupVolumeState(volume *longhorn.Volume) e
 // TODO: this block of code is duplicated of CreateSnapshot in MANAGER package.
 // Once we have Snapshot CR, we should refactor this
 
-func (c *VolumeController) createSnapshot(snapshotName string, labels map[string]string, volume *longhorn.Volume, dataEngineObj interface{}) (*longhorn.SnapshotInfo, error) {
+func (c *VolumeController) createSnapshot(snapshotName string, labels map[string]string, volume *longhorn.Volume, dataEngineObj engineapi.DataEngineObject) (*longhorn.SnapshotInfo, error) {
 	if volume.Name == "" {
 		return nil, fmt.Errorf("volume name required")
 	}

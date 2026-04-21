@@ -135,7 +135,7 @@ func (e *EngineBinary) ReplicaList(*longhorn.Engine) (map[string]*Replica, error
 
 // ReplicaAdd calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) ReplicaAdd(obj interface{}, replicaName, url string, isRestoreVolume, fastSync bool, localSync *etypes.FileLocalSync, replicaFileSyncHTTPClientTimeout, grpcTimeoutSeconds int64) error {
+func (e *EngineBinary) ReplicaAdd(obj DataEngineObject, replicaName, url string, isRestoreVolume, fastSync bool, localSync *etypes.FileLocalSync, replicaFileSyncHTTPClientTimeout, grpcTimeoutSeconds int64) error {
 	engine, ok := obj.(*longhorn.Engine)
 	if !ok {
 		return fmt.Errorf("unsupported object type %T for engine binary replica add", obj)
@@ -208,7 +208,7 @@ func (e *EngineBinary) VolumeGet(*longhorn.Engine) (*Volume, error) {
 
 // VersionGet calls engine binary to get client version and request gRPC proxy
 // for server version.
-func (e *EngineBinary) VersionGet(obj interface{}, clientOnly bool) (*EngineVersion, error) {
+func (e *EngineBinary) VersionGet(obj DataEngineObject, clientOnly bool) (*EngineVersion, error) {
 	cmdline := []string{"version"}
 	if clientOnly {
 		cmdline = append(cmdline, "--client-only")
@@ -229,12 +229,8 @@ func (e *EngineBinary) VersionGet(obj interface{}, clientOnly bool) (*EngineVers
 
 // VolumeExpand calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) VolumeExpand(obj interface{}) error {
-	engine, ok := obj.(*longhorn.Engine)
-	if !ok {
-		return fmt.Errorf("VolumeExpand via EngineBinary is only supported for *longhorn.Engine, got %T", obj)
-	}
-	size := engine.Spec.VolumeSize
+func (e *EngineBinary) VolumeExpand(obj DataEngineObject) error {
+	size := obj.GetVolumeSize()
 	if _, err := e.ExecuteEngineBinary("expand", "--size", strconv.FormatInt(size, 10)); err != nil {
 		return errors.Wrapf(err, "cannot get expand volume engine to size %v", size)
 	}

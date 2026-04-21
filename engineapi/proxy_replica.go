@@ -1,29 +1,19 @@
 package engineapi
 
 import (
-	"fmt"
-
 	etypes "github.com/longhorn/longhorn-engine/pkg/types"
 
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta2"
 )
 
-func (p *Proxy) ReplicaAdd(obj interface{}, replicaName, replicaAddress string, restore, fastSync bool, localSync *etypes.FileLocalSync, replicaFileSyncHTTPClientTimeout, grpcTimeoutSeconds int64) (err error) {
-	switch v := obj.(type) {
-	case *longhorn.Engine:
-		return p.grpcClient.ReplicaAdd(string(v.Spec.DataEngine), v.Name, "", v.Spec.VolumeName, p.DirectToURL(v),
-			replicaName, replicaAddress, restore, v.Spec.VolumeSize, v.Status.CurrentSize,
-			int(replicaFileSyncHTTPClientTimeout), fastSync, localSync, grpcTimeoutSeconds)
-	case *longhorn.EngineFrontend:
-		// For v2, replica add must be initiated through EngineFrontend. Replica
-		// list/remove remain engine-owned operations and continue to use the
-		// engine-based ReplicaList/ReplicaRemove APIs below.
-		return p.grpcClient.ReplicaAdd(string(v.Spec.DataEngine), v.Spec.EngineName, v.Name, v.Spec.VolumeName, p.DirectToURL(v),
-			replicaName, replicaAddress, restore, v.Spec.VolumeSize, 0,
-			int(replicaFileSyncHTTPClientTimeout), fastSync, localSync, grpcTimeoutSeconds)
-	default:
-		return fmt.Errorf("unsupported object type %T for replica add", obj)
+func (p *Proxy) ReplicaAdd(obj DataEngineObject, replicaName, replicaAddress string, restore, fastSync bool, localSync *etypes.FileLocalSync, replicaFileSyncHTTPClientTimeout, grpcTimeoutSeconds int64) (err error) {
+	var currentSize int64
+	if e, ok := obj.(*longhorn.Engine); ok {
+		currentSize = e.Status.CurrentSize
 	}
+	return p.grpcClient.ReplicaAdd(obj.GetDataEngine(), obj.GetEngineName(), obj.GetEngineFrontendName(), obj.GetVolumeName(), p.DirectToURL(obj),
+		replicaName, replicaAddress, restore, obj.GetVolumeSize(), currentSize,
+		int(replicaFileSyncHTTPClientTimeout), fastSync, localSync, grpcTimeoutSeconds)
 }
 
 func (p *Proxy) ReplicaRemove(e *longhorn.Engine, address, replicaName string) (err error) {

@@ -12,29 +12,20 @@ import (
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta2"
 )
 
-func (p *Proxy) SnapshotBackup(obj interface{}, snapshotName, backupName, backupTarget,
+func (p *Proxy) SnapshotBackup(obj DataEngineObject, snapshotName, backupName, backupTarget,
 	backingImageName, backingImageChecksum, compressionMethod string, concurrentLimit int, storageClassName string,
 	labels, credential, parameters map[string]string) (string, string, error) {
 	if snapshotName == etypes.VolumeHeadName {
 		return "", "", fmt.Errorf("invalid operation: cannot backup %v", etypes.VolumeHeadName)
 	}
 
-	if obj == nil {
-		return "", "", errors.Wrapf(errors.New("object is nil"), "failed to backup snapshot '%s'", snapshotName)
-	}
-
-	dataEngine, engineName, _, volumeName, err := p.GetObjInfo(obj)
-	if err != nil {
-		return "", "", err
-	}
-
 	snap, err := p.SnapshotGet(obj, snapshotName)
 	if err != nil {
-		return "", "", errors.Wrapf(err, "error getting snapshot '%s', engine '%s'", snapshotName, engineName)
+		return "", "", errors.Wrapf(err, "error getting snapshot '%s', engine '%s'", snapshotName, obj.GetEngineName())
 	}
 
 	if snap == nil {
-		return "", "", errors.Errorf("could not find snapshot '%s' to backup, engine '%s'", snapshotName, engineName)
+		return "", "", errors.Errorf("could not find snapshot '%s' to backup, engine '%s'", snapshotName, obj.GetEngineName())
 	}
 
 	// get environment variables if backup for s3
@@ -43,7 +34,7 @@ func (p *Proxy) SnapshotBackup(obj interface{}, snapshotName, backupName, backup
 		return "", "", err
 	}
 
-	backupID, replicaAddress, err := p.grpcClient.SnapshotBackup(string(dataEngine), engineName, volumeName, p.DirectToURL(obj),
+	backupID, replicaAddress, err := p.grpcClient.SnapshotBackup(obj.GetDataEngine(), obj.GetEngineName(), obj.GetVolumeName(), p.DirectToURL(obj),
 		backupName, snapshotName, backupTarget, backingImageName, backingImageChecksum, compressionMethod, concurrentLimit, storageClassName, labels, credentialEnv, parameters,
 	)
 	if err != nil {
@@ -53,13 +44,8 @@ func (p *Proxy) SnapshotBackup(obj interface{}, snapshotName, backupName, backup
 	return backupID, replicaAddress, nil
 }
 
-func (p *Proxy) SnapshotBackupStatus(obj interface{}, backupName, replicaAddress, replicaName string) (status *longhorn.EngineBackupStatus, err error) {
-	dataEngine, engineName, _, volumeName, err := p.GetObjInfo(obj)
-	if err != nil {
-		return nil, err
-	}
-
-	recv, err := p.grpcClient.SnapshotBackupStatus(string(dataEngine), engineName, volumeName,
+func (p *Proxy) SnapshotBackupStatus(obj DataEngineObject, backupName, replicaAddress, replicaName string) (status *longhorn.EngineBackupStatus, err error) {
+	recv, err := p.grpcClient.SnapshotBackupStatus(obj.GetDataEngine(), obj.GetEngineName(), obj.GetVolumeName(),
 		p.DirectToURL(obj), backupName, replicaAddress, replicaName)
 	if err != nil {
 		return nil, err

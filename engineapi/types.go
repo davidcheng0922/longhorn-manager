@@ -10,6 +10,7 @@ import (
 	iscsidevtypes "github.com/longhorn/go-iscsi-helper/types"
 	spdkdevtypes "github.com/longhorn/go-spdk-helper/pkg/types"
 	imapi "github.com/longhorn/longhorn-instance-manager/pkg/api"
+	imutil "github.com/longhorn/longhorn-instance-manager/pkg/util"
 
 	emeta "github.com/longhorn/longhorn-engine/pkg/meta"
 	etypes "github.com/longhorn/longhorn-engine/pkg/types"
@@ -18,6 +19,19 @@ import (
 
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta2"
 )
+
+// DataEngineObject is the compile-time safe abstraction over *longhorn.Engine
+// and *longhorn.EngineFrontend that replaces the previous interface{} parameter
+// throughout the EngineClient API. Every method that previously accepted
+// interface{} now accepts DataEngineObject, eliminating runtime type switches
+// in callers and implementations.
+type DataEngineObject = longhorn.DataEngineObject
+
+// DirectToURL returns the gRPC proxy redirect URL for the given DataEngineObject,
+// constructed from its StorageIP and Port.
+func DirectToURL(obj DataEngineObject) string {
+	return imutil.GetURL(obj.GetStorageIP(), obj.GetPort())
+}
 
 const (
 	CLIVersionFour = 4
@@ -77,10 +91,10 @@ type Metrics struct {
 }
 
 type EngineClient interface {
-	VersionGet(obj interface{}, clientOnly bool) (*EngineVersion, error)
+	VersionGet(obj DataEngineObject, clientOnly bool) (*EngineVersion, error)
 
 	VolumeGet(*longhorn.Engine) (*Volume, error)
-	VolumeExpand(obj interface{}) error
+	VolumeExpand(obj DataEngineObject) error
 
 	VolumeFrontendStart(*longhorn.Engine) error
 	VolumeFrontendShutdown(*longhorn.Engine) error
@@ -89,7 +103,7 @@ type EngineClient interface {
 	VolumeSnapshotMaxSizeSet(engine *longhorn.Engine) error
 
 	ReplicaList(*longhorn.Engine) (map[string]*Replica, error)
-	ReplicaAdd(obj interface{}, replicaName, url string, isRestoreVolume, fastSync bool, localSync *etypes.FileLocalSync, replicaFileSyncHTTPClientTimeout, grpcTimeoutSeconds int64) error
+	ReplicaAdd(obj DataEngineObject, replicaName, url string, isRestoreVolume, fastSync bool, localSync *etypes.FileLocalSync, replicaFileSyncHTTPClientTimeout, grpcTimeoutSeconds int64) error
 	ReplicaRemove(engine *longhorn.Engine, url, replicaName string) error
 	ReplicaRebuildStatus(*longhorn.Engine) (map[string]*longhorn.RebuildStatus, error)
 	ReplicaRebuildQosSet(engine *longhorn.Engine, qosLimitMbps int64) error
@@ -98,19 +112,19 @@ type EngineClient interface {
 	ReplicaRebuildConcurrentSyncLimitSet(engine *longhorn.Engine, limit int) error
 	ReplicaRebuildConcurrentSyncLimitGet(engine *longhorn.Engine) (int, error)
 
-	SnapshotCreate(obj interface{}, name string, labels map[string]string, freezeFilesystem bool) (string, error)
-	SnapshotList(obj interface{}) (map[string]*longhorn.SnapshotInfo, error)
-	SnapshotGet(obj interface{}, name string) (*longhorn.SnapshotInfo, error)
-	SnapshotDelete(obj interface{}, name string) error
-	SnapshotRevert(obj interface{}, name string) error
-	SnapshotPurge(obj interface{}) error
-	SnapshotPurgeStatus(obj interface{}) (map[string]*longhorn.PurgeStatus, error)
-	SnapshotBackup(obj interface{}, snapshotName, backupName, backupTarget, backingImageName, backingImageChecksum, compressionMethod string, concurrentLimit int, storageClassName string, labels, credential, parameters map[string]string) (string, string, error)
-	SnapshotBackupStatus(obj interface{}, backupName, replicaAddress, replicaName string) (*longhorn.EngineBackupStatus, error)
-	SnapshotCloneStatus(obj interface{}) (map[string]*longhorn.SnapshotCloneStatus, error)
-	SnapshotClone(obj interface{}, snapshotName, fromEngineAddress, fromVolumeName, fromEngineName string, fileSyncHTTPClientTimeout, grpcTimeoutSeconds int64, cloneMode string) error
-	SnapshotHash(obj interface{}, snapshotName string, rehash bool) error
-	SnapshotHashStatus(obj interface{}, snapshotName string) (map[string]*longhorn.HashStatus, error)
+	SnapshotCreate(obj DataEngineObject, name string, labels map[string]string, freezeFilesystem bool) (string, error)
+	SnapshotList(obj DataEngineObject) (map[string]*longhorn.SnapshotInfo, error)
+	SnapshotGet(obj DataEngineObject, name string) (*longhorn.SnapshotInfo, error)
+	SnapshotDelete(obj DataEngineObject, name string) error
+	SnapshotRevert(obj DataEngineObject, name string) error
+	SnapshotPurge(obj DataEngineObject) error
+	SnapshotPurgeStatus(obj DataEngineObject) (map[string]*longhorn.PurgeStatus, error)
+	SnapshotBackup(obj DataEngineObject, snapshotName, backupName, backupTarget, backingImageName, backingImageChecksum, compressionMethod string, concurrentLimit int, storageClassName string, labels, credential, parameters map[string]string) (string, string, error)
+	SnapshotBackupStatus(obj DataEngineObject, backupName, replicaAddress, replicaName string) (*longhorn.EngineBackupStatus, error)
+	SnapshotCloneStatus(obj DataEngineObject) (map[string]*longhorn.SnapshotCloneStatus, error)
+	SnapshotClone(obj DataEngineObject, snapshotName, fromEngineAddress, fromVolumeName, fromEngineName string, fileSyncHTTPClientTimeout, grpcTimeoutSeconds int64, cloneMode string) error
+	SnapshotHash(obj DataEngineObject, snapshotName string, rehash bool) error
+	SnapshotHashStatus(obj DataEngineObject, snapshotName string) (map[string]*longhorn.HashStatus, error)
 
 	BackupRestore(engine *longhorn.Engine, backupTarget, backupName, backupVolume, lastRestored string, credential map[string]string, concurrentLimit int) error
 	BackupRestoreStatus(engine *longhorn.Engine) (map[string]*longhorn.RestoreStatus, error)

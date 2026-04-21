@@ -1888,7 +1888,7 @@ type rebuildContext struct {
 	currentEF     *longhorn.EngineFrontend
 	rebuildProxy  engineapi.EngineClientProxy
 	cleanupProxy  engineapi.EngineClientProxy
-	rebuildObj    interface{} // *Engine (v1) or *EngineFrontend (v2) for ReplicaAdd
+	rebuildObj    engineapi.DataEngineObject // *Engine (v1) or *EngineFrontend (v2) for ReplicaAdd
 	replica       *longhorn.Replica
 	replicaName   string
 	replicaURL    string

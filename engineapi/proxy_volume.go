@@ -23,23 +23,8 @@ func (p *Proxy) VolumeGet(e *longhorn.Engine) (volume *Volume, err error) {
 	return (*Volume)(recv), nil
 }
 
-func (p *Proxy) VolumeExpand(obj interface{}) (err error) {
-	dataEngine, engineName, engineFrontendName, volumeName, err := p.GetObjInfo(obj)
-	if err != nil {
-		return err
-	}
-
-	var volumeSize int64
-	switch v := obj.(type) {
-	case *longhorn.Engine:
-		volumeSize = v.Spec.VolumeSize
-	case *longhorn.EngineFrontend:
-		volumeSize = v.Spec.VolumeSize
-	default:
-		return fmt.Errorf("BUG: unsupported object type %T for VolumeExpand", obj)
-	}
-
-	return p.grpcClient.VolumeExpand(dataEngine, engineName, engineFrontendName, volumeName, p.DirectToURL(obj), volumeSize)
+func (p *Proxy) VolumeExpand(obj DataEngineObject) (err error) {
+	return p.grpcClient.VolumeExpand(obj.GetDataEngine(), obj.GetEngineName(), obj.GetEngineFrontendName(), obj.GetVolumeName(), p.DirectToURL(obj), obj.GetVolumeSize())
 }
 
 func (p *Proxy) VolumeFrontendStart(e *longhorn.Engine) (err error) {

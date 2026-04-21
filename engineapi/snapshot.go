@@ -15,7 +15,7 @@ import (
 
 // SnapshotCreate calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotCreate(obj interface{}, name string, labels map[string]string,
+func (e *EngineBinary) SnapshotCreate(obj DataEngineObject, name string, labels map[string]string,
 	freezeFilesystem bool) (string, error) {
 	args := []string{"snapshot", "create"}
 	for k, v := range labels {
@@ -35,7 +35,7 @@ func (e *EngineBinary) SnapshotCreate(obj interface{}, name string, labels map[s
 
 // SnapshotList calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotList(interface{}) (map[string]*longhorn.SnapshotInfo, error) {
+func (e *EngineBinary) SnapshotList(DataEngineObject) (map[string]*longhorn.SnapshotInfo, error) {
 	output, err := e.ExecuteEngineBinary("snapshot", "info")
 	if err != nil {
 		return nil, errors.Wrapf(err, "error listing snapshot")
@@ -49,7 +49,7 @@ func (e *EngineBinary) SnapshotList(interface{}) (map[string]*longhorn.SnapshotI
 
 // SnapshotGet calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotGet(obj interface{}, name string) (*longhorn.SnapshotInfo, error) {
+func (e *EngineBinary) SnapshotGet(obj DataEngineObject, name string) (*longhorn.SnapshotInfo, error) {
 	data, err := e.SnapshotList(nil)
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func (e *EngineBinary) SnapshotGet(obj interface{}, name string) (*longhorn.Snap
 
 // SnapshotDelete calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotDelete(obj interface{}, name string) error {
+func (e *EngineBinary) SnapshotDelete(obj DataEngineObject, name string) error {
 	if name == etypes.VolumeHeadName {
 		return fmt.Errorf("invalid operation: cannot remove %v", etypes.VolumeHeadName)
 	}
@@ -71,7 +71,7 @@ func (e *EngineBinary) SnapshotDelete(obj interface{}, name string) error {
 
 // SnapshotRevert calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotRevert(obj interface{}, name string) error {
+func (e *EngineBinary) SnapshotRevert(obj DataEngineObject, name string) error {
 	if name == etypes.VolumeHeadName {
 		return fmt.Errorf("invalid operation: cannot revert to %v", etypes.VolumeHeadName)
 	}
@@ -83,7 +83,7 @@ func (e *EngineBinary) SnapshotRevert(obj interface{}, name string) error {
 
 // SnapshotPurge calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotPurge(obj interface{}) error {
+func (e *EngineBinary) SnapshotPurge(obj DataEngineObject) error {
 	if _, err := e.ExecuteEngineBinaryWithoutTimeout([]string{}, "snapshot", "purge", "--skip-if-in-progress"); err != nil {
 		return errors.Wrapf(err, "error starting snapshot purge")
 	}
@@ -93,7 +93,7 @@ func (e *EngineBinary) SnapshotPurge(obj interface{}) error {
 
 // SnapshotPurgeStatus calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotPurgeStatus(obj interface{}) (map[string]*longhorn.PurgeStatus, error) {
+func (e *EngineBinary) SnapshotPurgeStatus(obj DataEngineObject) (map[string]*longhorn.PurgeStatus, error) {
 	output, err := e.ExecuteEngineBinary("snapshot", "purge-status")
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting snapshot purge status")
@@ -109,7 +109,7 @@ func (e *EngineBinary) SnapshotPurgeStatus(obj interface{}) (map[string]*longhor
 
 // SnapshotClone calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotClone(obj interface{}, snapshotName, fromEngineAddress, fromVolumeName,
+func (e *EngineBinary) SnapshotClone(obj DataEngineObject, snapshotName, fromEngineAddress, fromVolumeName,
 	fromEngineName string, fileSyncHTTPClientTimeout, grpcTimeoutSeconds int64, cloneMode string) error {
 	args := []string{"snapshot", "clone", "--snapshot-name", snapshotName, "--from-controller-address",
 		fromEngineAddress}
@@ -131,7 +131,7 @@ func (e *EngineBinary) SnapshotClone(obj interface{}, snapshotName, fromEngineAd
 
 // SnapshotCloneStatus calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotCloneStatus(obj interface{}) (map[string]*longhorn.SnapshotCloneStatus, error) {
+func (e *EngineBinary) SnapshotCloneStatus(obj DataEngineObject) (map[string]*longhorn.SnapshotCloneStatus, error) {
 	args := []string{"snapshot", "clone-status"}
 	output, err := e.ExecuteEngineBinary(args...)
 	if err != nil {
@@ -146,7 +146,7 @@ func (e *EngineBinary) SnapshotCloneStatus(obj interface{}) (map[string]*longhor
 
 // SnapshotHash calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotHash(obj interface{}, snapshotName string, rehash bool) error {
+func (e *EngineBinary) SnapshotHash(obj DataEngineObject, snapshotName string, rehash bool) error {
 	args := []string{"snapshot", "hash"}
 
 	if rehash {
@@ -165,7 +165,7 @@ func (e *EngineBinary) SnapshotHash(obj interface{}, snapshotName string, rehash
 
 // SnapshotHashStatus calls engine binary
 // TODO: Deprecated, replaced by gRPC proxy
-func (e *EngineBinary) SnapshotHashStatus(obj interface{}, snapshotName string) (map[string]*longhorn.HashStatus, error) {
+func (e *EngineBinary) SnapshotHashStatus(obj DataEngineObject, snapshotName string) (map[string]*longhorn.HashStatus, error) {
 	output, err := e.ExecuteEngineBinary("snapshot", "hash-status", "--snapshot-name", snapshotName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting snapshot hashing status")

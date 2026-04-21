@@ -20,13 +20,10 @@ func TestGetObjInfoForVolumeExpand(t *testing.T) {
 		},
 	}
 
-	dataEngine, engineName, engineFrontendName, volumeName, err := (&Proxy{}).GetObjInfo(engine)
-	if err != nil {
-		t.Fatalf("GetObjInfo(engine) returned error: %v", err)
-	}
-	if dataEngine != string(longhorn.DataEngineTypeV2) || engineName != "vol-e-0" || engineFrontendName != "" || volumeName != "vol" {
-		t.Fatalf("GetObjInfo(engine) = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
-			dataEngine, engineName, engineFrontendName, volumeName,
+	var obj DataEngineObject = engine
+	if obj.GetDataEngine() != string(longhorn.DataEngineTypeV2) || obj.GetEngineName() != "vol-e-0" || obj.GetEngineFrontendName() != "" || obj.GetVolumeName() != "vol" {
+		t.Fatalf("Engine DataEngineObject = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
+			obj.GetDataEngine(), obj.GetEngineName(), obj.GetEngineFrontendName(), obj.GetVolumeName(),
 			string(longhorn.DataEngineTypeV2), "vol-e-0", "", "vol")
 	}
 
@@ -43,13 +40,10 @@ func TestGetObjInfoForVolumeExpand(t *testing.T) {
 		},
 	}
 
-	dataEngine, engineName, engineFrontendName, volumeName, err = (&Proxy{}).GetObjInfo(engineFrontend)
-	if err != nil {
-		t.Fatalf("GetObjInfo(engineFrontend) returned error: %v", err)
-	}
-	if dataEngine != string(longhorn.DataEngineTypeV2) || engineName != "vol-e-0" || engineFrontendName != "vol-ef-0" || volumeName != "vol" {
-		t.Fatalf("GetObjInfo(engineFrontend) = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
-			dataEngine, engineName, engineFrontendName, volumeName,
+	obj = engineFrontend
+	if obj.GetDataEngine() != string(longhorn.DataEngineTypeV2) || obj.GetEngineName() != "vol-e-0" || obj.GetEngineFrontendName() != "vol-ef-0" || obj.GetVolumeName() != "vol" {
+		t.Fatalf("EngineFrontend DataEngineObject = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
+			obj.GetDataEngine(), obj.GetEngineName(), obj.GetEngineFrontendName(), obj.GetVolumeName(),
 			string(longhorn.DataEngineTypeV2), "vol-e-0", "vol-ef-0", "vol")
 	}
 }
