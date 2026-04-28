@@ -744,6 +744,37 @@ func (s *DataStore) ValidateSetting(name, value string) (err error) {
 			}
 			return errors.Wrapf(err, "failed to get the storage class %v for setting %v", value, types.SettingNameDefaultLonghornStaticStorageClass)
 		}
+
+	case types.SettingNameV2InstanceManagerUpgradeStartTime:
+		// Validate RFC3339 format if value is not empty
+		if value != "" {
+			if _, err := time.Parse(time.RFC3339, value); err != nil {
+				return errors.Wrapf(err, "setting %v must be in RFC3339 format (e.g., 2026-04-20T15:00:00Z)", name)
+			}
+		}
+
+		// Check if upgrade has already started - if so, prevent changing start time
+		imuc, err := s.GetInstanceManagerUpgradeControlRO(types.InstanceManagerUpgradeControlName)
+		if err != nil {
+			if ErrorIsNotFound(err) {
+				// No upgrade control exists yet, allow setting the start time
+				return nil
+			}
+			return errors.Wrapf(err, "failed to check upgrade status for setting %v", name)
+		}
+
+		if imuc.Status.CurrentNode != "" {
+			return errors.Errorf("cannot update %v setting: upgrade actively in progress on node %v. Changes to start time are ignored during active upgrades", name, imuc.Status.CurrentNode)
+		}
+
+		// Additionally check if any node is in the in-progress state.
+		// We only block updates during active upgrades, not when all nodes are
+		// in terminal states (completed/failed/converged) from a previous upgrade cycle.
+		for nodeID, info := range imuc.Status.Nodes {
+			if info.State == longhorn.NodeUpgradeStateInProgress {
+				return errors.Errorf("cannot update %v setting: upgrade actively in progress on node %v. Changes to start time are ignored during active upgrades", name, nodeID)
+			}
+		}
 	}
 	return nil
 }

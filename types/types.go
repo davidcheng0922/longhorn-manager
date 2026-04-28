@@ -48,8 +48,6 @@ const (
 	LonghornKindSystemBackup        = "SystemBackup"
 	LonghornKindSystemRestore       = "SystemRestore"
 	LonghornKindOrphan              = "Orphan"
-	LonghornKindShardGroup          = "ShardGroup"
-	LonghornKindShard               = "Shard"
 
 	LonghornKindBackingImageDataSource = "BackingImageDataSource"
 
@@ -100,6 +98,11 @@ const (
 	CRDAPIVersionV1beta1  = "longhorn.io/v1beta1"
 	CRDAPIVersionV1beta2  = "longhorn.io/v1beta2"
 	CurrentCRDAPIVersion  = CRDAPIVersionV1beta2
+
+	// InstanceManagerUpgradeControlName is the well-known name of the singleton
+	// InstanceManagerUpgradeControl CR that orchestrates rolling live upgrades
+	// across all nodes. Only one such CR exists per Longhorn installation.
+	InstanceManagerUpgradeControlName = "longhorn-instance-manager-upgrade-control"
 )
 
 // ECMaxBaseBdevs is the maximum number of base bdevs (k+m) an EC array may have.
@@ -203,45 +206,43 @@ const (
 	LonghornLabelRecurringJobKeyPrefixFmt = "recurring-%s.longhorn.io"
 	LonghornLabelVolumeSettingKeyPrefix   = "setting.longhorn.io"
 
-	LonghornLabelEngineImage                     = "engine-image"
-	LonghornLabelInstanceManager                 = "instance-manager"
-	LonghornLabelNode                            = "node"
-	LonghornLabelDiskUUID                        = "disk-uuid"
-	LonghornLabelInstanceManagerType             = "instance-manager-type"
-	LonghornLabelInstanceManagerImage            = "instance-manager-image"
-	LonghornLabelVolume                          = "longhornvolume"
-	LonghornLabelVolumeEncrypted                 = "volume-encrypted"
-	LonghornLabelV2EncryptedVolumeWithLuksHeader = "v2-encrypted-volume-with-luks-header"
-	LonghornLabelShardGroup                      = "shardgroup"
-	LonghornLabelShareManager                    = "share-manager"
-	LonghornLabelShareManagerImage               = "share-manager-image"
-	LonghornLabelShareManagerConfigMap           = "share-manager-configmap"
-	LonghornLabelBackingImage                    = "backing-image"
-	LonghornLabelBackingImageManager             = "backing-image-manager"
-	LonghornLabelManagedBy                       = "managed-by"
-	LonghornLabelSnapshotForCloningVolume        = "for-cloning-volume"
-	LonghornLabelBackingImageDataSource          = "backing-image-data-source"
-	LonghornLabelBackupTarget                    = "backup-target"
-	LonghornLabelBackupVolume                    = "backup-volume"
-	LonghornLabelRecurringJob                    = "job"
-	LonghornLabelRecurringJobGroup               = "job-group"
-	LonghornLabelRecurringJobSource              = "source"
-	LonghornLabelOrphan                          = "orphan"
-	LonghornLabelOrphanType                      = "orphan-type"
-	LonghornLabelRecoveryBackend                 = "recovery-backend"
-	LonghornLabelCRDAPIVersion                   = "crd-api-version"
-	LonghornLabelVolumeAccessMode                = "volume-access-mode"
-	LonghornLabelFollowGlobalSetting             = "follow-global-setting"
-	LonghornLabelSystemRestore                   = "system-restore"
-	LonghornLabelLastSkippedSystemRestore        = "last-skipped-system-restored"
-	LonghornLabelLastSkippedSystemRestoreAt      = "last-skipped-system-restored-at"
-	LonghornLabelLastSystemRestore               = "last-system-restored"
-	LonghornLabelLastSystemRestoreAt             = "last-system-restored-at"
-	LonghornLabelLastSystemRestoreBackup         = "last-system-restored-backup"
-	LonghornLabelDataEngine                      = "data-engine"
-	LonghornLabelVersion                         = "version"
-	LonghornLabelAdmissionWebhook                = "admission-webhook"
-	LonghornLabelConversionWebhook               = "conversion-webhook"
+	LonghornLabelEngineImage                = "engine-image"
+	LonghornLabelInstanceManager            = "instance-manager"
+	LonghornLabelNode                       = "node"
+	LonghornLabelDiskUUID                   = "disk-uuid"
+	LonghornLabelInstanceManagerType        = "instance-manager-type"
+	LonghornLabelInstanceManagerImage       = "instance-manager-image"
+	LonghornLabelVolume                     = "longhornvolume"
+	LonghornLabelVolumeEncrypted            = "volume-encrypted"
+	LonghornLabelShareManager               = "share-manager"
+	LonghornLabelShareManagerImage          = "share-manager-image"
+	LonghornLabelShareManagerConfigMap      = "share-manager-configmap"
+	LonghornLabelBackingImage               = "backing-image"
+	LonghornLabelBackingImageManager        = "backing-image-manager"
+	LonghornLabelManagedBy                  = "managed-by"
+	LonghornLabelSnapshotForCloningVolume   = "for-cloning-volume"
+	LonghornLabelBackingImageDataSource     = "backing-image-data-source"
+	LonghornLabelBackupTarget               = "backup-target"
+	LonghornLabelBackupVolume               = "backup-volume"
+	LonghornLabelRecurringJob               = "job"
+	LonghornLabelRecurringJobGroup          = "job-group"
+	LonghornLabelRecurringJobSource         = "source"
+	LonghornLabelOrphan                     = "orphan"
+	LonghornLabelOrphanType                 = "orphan-type"
+	LonghornLabelRecoveryBackend            = "recovery-backend"
+	LonghornLabelCRDAPIVersion              = "crd-api-version"
+	LonghornLabelVolumeAccessMode           = "volume-access-mode"
+	LonghornLabelFollowGlobalSetting        = "follow-global-setting"
+	LonghornLabelSystemRestore              = "system-restore"
+	LonghornLabelLastSkippedSystemRestore   = "last-skipped-system-restored"
+	LonghornLabelLastSkippedSystemRestoreAt = "last-skipped-system-restored-at"
+	LonghornLabelLastSystemRestore          = "last-system-restored"
+	LonghornLabelLastSystemRestoreAt        = "last-system-restored-at"
+	LonghornLabelLastSystemRestoreBackup    = "last-system-restored-backup"
+	LonghornLabelDataEngine                 = "data-engine"
+	LonghornLabelVersion                    = "version"
+	LonghornLabelAdmissionWebhook           = "admission-webhook"
+	LonghornLabelConversionWebhook          = "conversion-webhook"
 
 	LonghornRecoveryBackendServiceName = "longhorn-recovery-backend"
 
@@ -312,6 +313,18 @@ const (
 	CSISidecarPortNameResizer     = "csi-resizer"
 	CSISidecarPortNameSnapshotter = "csi-snapshotter"
 )
+
+func IsActiveInstanceManagerUpgradeState(state longhorn.InstanceManagerUpgradeState) bool {
+	switch state {
+	case longhorn.InstanceManagerUpgradeStateRelocatingEngines,
+		longhorn.InstanceManagerUpgradeStateWaitingForSourceIM,
+		longhorn.InstanceManagerUpgradeStateRestoringEngines,
+		longhorn.InstanceManagerUpgradeStateWaitingForHealthyVolumes:
+		return true
+	default:
+		return false
+	}
+}
 
 const (
 	RecurringJobParameterFullBackupInterval = "full-backup-interval"
