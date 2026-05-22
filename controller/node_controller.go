@@ -688,10 +688,6 @@ func (nc *NodeController) enqueueIMUPreUpgradeSnapshotHash(obj interface{}) {
 		}
 	}
 
-	if imu.Spec.NodeID != nc.controllerID {
-		return
-	}
-
 	for volumeName, reloc := range imu.Status.Engines {
 		if reloc.SnapshotName == "" {
 			continue
