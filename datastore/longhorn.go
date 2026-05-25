@@ -764,7 +764,7 @@ func (s *DataStore) ValidateSetting(name, value string) (err error) {
 		}
 
 		if imuc.Status.CurrentNode != "" {
-			return errors.Errorf("cannot update %v setting: upgrade actively in progress on node %v. Changes to start time are ignored during active upgrades", name, imuc.Status.CurrentNode)
+			return errors.Errorf("cannot update %v setting while upgrade is actively in progress on node %v", name, imuc.Status.CurrentNode)
 		}
 
 		// Additionally check if any node is in the in-progress state.
@@ -772,7 +772,7 @@ func (s *DataStore) ValidateSetting(name, value string) (err error) {
 		// in terminal states (completed/failed/converged) from a previous upgrade cycle.
 		for nodeID, info := range imuc.Status.Nodes {
 			if info.State == longhorn.NodeUpgradeStateInProgress {
-				return errors.Errorf("cannot update %v setting: upgrade actively in progress on node %v. Changes to start time are ignored during active upgrades", name, nodeID)
+				return errors.Errorf("cannot update %v setting while upgrade is actively in progress on node %v", name, nodeID)
 			}
 		}
 	}
