@@ -1820,6 +1820,8 @@ func (imc *InstanceManagerController) createGenericManagerPodSpec(im *longhorn.I
 					},
 				},
 			},
+			HostNetwork:   true,
+			DNSPolicy:     corev1.DNSClusterFirstWithHostNet,
 			NodeName:      im.Spec.NodeID,
 			RestartPolicy: corev1.RestartPolicyNever,
 		},
