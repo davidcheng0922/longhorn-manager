@@ -26,6 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/utils/ptr"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -50,6 +51,13 @@ import (
 
 var (
 	mountPropagationHostToContainer = corev1.MountPropagationHostToContainer
+)
+
+const (
+	nvmeAgentDaemonSetName = "longhorn-nvme-agent"
+	nvmeAgentSocketName    = "nvme-agent.sock"
+	nvmeAgentRoleLabel     = "longhorn.io/instance-manager-role"
+	nvmeAgentRole          = "nvme-agent"
 )
 
 type InstanceManagerController struct {
@@ -713,6 +721,11 @@ func (imc *InstanceManagerController) handlePod(im *longhorn.InstanceManager) er
 	if im.Status.CurrentState != longhorn.InstanceManagerStateError &&
 		im.Status.CurrentState != longhorn.InstanceManagerStateStopped &&
 		isPodDeletionNotRequired {
+		if types.IsDataEngineV2(im.Spec.DataEngine) && imc.controllerID == im.Spec.NodeID {
+			if err := imc.ensureNvmeAgentDaemonSet(im); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -1805,6 +1818,47 @@ func (imc *InstanceManagerController) createInstanceManagerPod(im *longhorn.Inst
 		return err
 	}
 
+	if types.IsDataEngineV2(im.Spec.DataEngine) {
+		if err := imc.ensureNvmeAgentDaemonSet(im); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (imc *InstanceManagerController) ensureNvmeAgentDaemonSet(im *longhorn.InstanceManager) error {
+	if _, err := imc.ds.GetDaemonSet(nvmeAgentDaemonSetName); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	tolerations, err := imc.ds.GetSettingTaintToleration()
+	if err != nil {
+		return errors.Wrap(err, "failed to get taint toleration setting before creating NVMe agent DaemonSet")
+	}
+
+	nodeSelector, err := imc.ds.GetSettingSystemManagedComponentsNodeSelector()
+	if err != nil {
+		return errors.Wrap(err, "failed to get node selector setting before creating NVMe agent DaemonSet")
+	}
+
+	registrySecretSetting, err := imc.ds.GetSettingWithAutoFillingRO(types.SettingNameRegistrySecret)
+	if err != nil {
+		return errors.Wrap(err, "failed to get registry secret setting before creating NVMe agent DaemonSet")
+	}
+
+	daemonSetSpec, err := imc.createNvmeAgentDaemonSetSpec(im, tolerations, registrySecretSetting.Value, nodeSelector)
+	if err != nil {
+		return err
+	}
+
+	imc.logger.Infof("Creating NVMe agent DaemonSet %v", nvmeAgentDaemonSetName)
+	if _, err := imc.ds.CreateDaemonSet(daemonSetSpec); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+
 	return nil
 }
 
@@ -1876,6 +1930,174 @@ func (imc *InstanceManagerController) createGenericManagerPodSpec(im *longhorn.I
 	}
 
 	return podSpec, nil
+}
+
+func (imc *InstanceManagerController) createNvmeAgentDaemonSetSpec(im *longhorn.InstanceManager, tolerations []corev1.Toleration, registrySecret string, nodeSelector map[string]string) (*appsv1.DaemonSet, error) {
+	tolerationsByte, err := json.Marshal(tolerations)
+	if err != nil {
+		return nil, err
+	}
+
+	priorityClass, err := imc.ds.GetSettingWithAutoFillingRO(types.SettingNamePriorityClass)
+	if err != nil {
+		return nil, err
+	}
+
+	imagePullPolicy, err := imc.ds.GetSettingImagePullPolicy()
+	if err != nil {
+		return nil, err
+	}
+
+	nvmeAgentSocketPath := filepath.Join(types.GetUnixDomainSocketDirectoryInContainer(), nvmeAgentSocketName)
+	labels := types.GetInstanceManagerLabels("", im.Spec.Image, longhorn.InstanceManagerTypeAllInOne, im.Spec.DataEngine)
+	labels[nvmeAgentRoleLabel] = nvmeAgentRole
+
+	daemonSetSpec := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        nvmeAgentDaemonSetName,
+			Namespace:   imc.namespace,
+			Annotations: map[string]string{types.GetLonghornLabelKey(types.LastAppliedTolerationAnnotationKeySuffix): string(tolerationsByte)},
+			Labels:      labels,
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					types.GetLonghornLabelComponentKey(): types.LonghornLabelInstanceManager,
+					nvmeAgentRoleLabel:                   nvmeAgentRole,
+				},
+			},
+			UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
+				Type: appsv1.OnDeleteDaemonSetStrategyType,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   nvmeAgentDaemonSetName,
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: imc.serviceAccount,
+					Tolerations:        util.GetDistinctTolerations(tolerations),
+					NodeSelector:       nodeSelector,
+					PriorityClassName:  priorityClass.Value,
+					RestartPolicy:      corev1.RestartPolicyAlways,
+					Containers: []corev1.Container{
+						{
+							Name:            "nvme-agent",
+							Image:           im.Spec.Image,
+							ImagePullPolicy: imagePullPolicy,
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: ptr.To(true),
+							},
+							Args: []string{
+								"instance-manager", "--debug",
+								"nvme-agent",
+								"--listen", "unix://" + nvmeAgentSocketPath,
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name:  "TLS_DIR",
+									Value: imtypes.TLSDirectoryInContainer,
+								},
+								{
+									Name: types.EnvPodIP,
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "status.podIP",
+										},
+									},
+								},
+								{
+									Name:  types.EnvDataEngine,
+									Value: string(im.Spec.DataEngine),
+								},
+								{
+									Name:  types.LonghornDataPathEnv,
+									Value: types.GetLonghornDataPath(),
+								},
+								{
+									Name:  types.LonghornControlPathEnv,
+									Value: types.GetLonghornControlPath(),
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									MountPath:        "/host",
+									Name:             "host",
+									MountPropagation: &mountPropagationHostToContainer,
+								},
+								{
+									MountPath: types.GetUnixDomainSocketDirectoryInContainer(),
+									Name:      "unix-domain-socket",
+								},
+								{
+									MountPath: imtypes.TLSDirectoryInContainer,
+									Name:      "longhorn-grpc-tls",
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "-c", fmt.Sprintf("test -S %s", nvmeAgentSocketPath)},
+									},
+								},
+								InitialDelaySeconds: datastore.IMPodProbeInitialDelay,
+								TimeoutSeconds:      5,
+								PeriodSeconds:       10,
+								FailureThreshold:    datastore.IMPodLivenessProbeFailureThreshold,
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "host",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/",
+								},
+							},
+						},
+						{
+							Name: "unix-domain-socket",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: types.GetUnixDomainSocketDirectoryOnHost(),
+									Type: &[]corev1.HostPathType{corev1.HostPathDirectoryOrCreate}[0],
+								},
+							},
+						},
+						{
+							Name: "longhorn-grpc-tls",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: types.TLSSecretName,
+									Optional:   ptr.To(true),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if tz := os.Getenv(types.EnvTZ); tz != "" {
+		daemonSetSpec.Spec.Template.Spec.Containers[0].Env = append(daemonSetSpec.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
+			Name:  types.EnvTZ,
+			Value: tz,
+		})
+	}
+
+	if registrySecret != "" {
+		daemonSetSpec.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
+			{
+				Name: registrySecret,
+			},
+		}
+	}
+
+	types.AddGoCoverDirToDaemonSet(daemonSetSpec)
+
+	return daemonSetSpec, nil
 }
 
 func (imc *InstanceManagerController) setPodExtraAnnotations(podSpec *corev1.Pod) error {
