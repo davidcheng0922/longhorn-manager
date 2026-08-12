@@ -150,6 +150,43 @@ func isVolumeFullyDetached(vol *longhorn.Volume) bool {
 		vol.Status.State == longhorn.VolumeStateDetached
 }
 
+func hasPendingOrActiveInstanceManagerUpgradeOnNode(ds *datastore.DataStore, nodeID string) (bool, error) {
+	imus, err := ds.ListInstanceManagerUpgradesRO()
+	if err != nil {
+		return false, err
+	}
+	for _, imu := range imus {
+		if imu.Spec.NodeID == nodeID &&
+			(imu.Status.State == longhorn.InstanceManagerUpgradeStatePending || types.IsActiveInstanceManagerUpgradeState(imu.Status.State)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func hasPendingOrActiveInstanceManagerUpgradeControl(ds *datastore.DataStore) (bool, error) {
+	imuc, err := ds.GetInstanceManagerUpgradeControlRO(types.InstanceManagerUpgradeControlName)
+	if err != nil {
+		if datastore.ErrorIsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if imuc.Status.CurrentNode != "" {
+		return true, nil
+	}
+	for _, info := range imuc.Status.Nodes {
+		if info.State == longhorn.NodeUpgradeStatePending || info.State == longhorn.NodeUpgradeStateInProgress {
+			return true, nil
+		}
+	}
+	// A newly-created or scheduled IMUC may not have populated Status.Nodes yet.
+	// Treat it as active so the node controller does not bypass the rolling
+	// upgrade by recreating default-image v2 IMs on every node.
+	return len(imuc.Status.Nodes) == 0, nil
+}
+
 func createOrUpdateAttachmentTicket(va *longhorn.VolumeAttachment, ticketID, nodeID, disableFrontend string, attacherType longhorn.AttacherType) {
 	attachmentTicket, ok := va.Spec.AttachmentTickets[ticketID]
 	if !ok {

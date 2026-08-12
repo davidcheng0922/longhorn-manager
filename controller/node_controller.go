@@ -190,6 +190,14 @@ func NewNodeController(
 	}
 	nc.cacheSyncs = append(nc.cacheSyncs, ds.VolumeInformer.HasSynced)
 
+	if _, err = ds.InstanceManagerUpgradeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    nc.enqueueIMUPreUpgradeSnapshotHash,
+		UpdateFunc: func(old, cur interface{}) { nc.enqueueIMUPreUpgradeSnapshotHash(cur) },
+	}); err != nil {
+		return nil, err
+	}
+	nc.cacheSyncs = append(nc.cacheSyncs, ds.InstanceManagerUpgradeInformer.HasSynced)
+
 	return nc, nil
 }
 
@@ -660,6 +668,39 @@ func (nc *NodeController) enqueueSnapshot(old, cur interface{}) {
 	}
 
 	nc.enqueueSnapshotHashEvent(currentSnapshot, volume)
+}
+
+func (nc *NodeController) enqueueIMUPreUpgradeSnapshotHash(obj interface{}) {
+	imu, ok := obj.(*longhorn.InstanceManagerUpgrade)
+	if !ok {
+		return
+	}
+
+	for volumeName, reloc := range imu.Status.Engines {
+		if reloc.SnapshotName == "" {
+			continue
+		}
+
+		snapshot, err := nc.ds.GetSnapshotRO(reloc.SnapshotName)
+		if err != nil {
+			nc.logger.WithError(err).Warnf("Failed to get pre-upgrade snapshot %v for volume %v", reloc.SnapshotName, volumeName)
+			continue
+		}
+		if snapshot.Status.Checksum != "" {
+			continue
+		}
+
+		volume, err := nc.ds.GetVolumeRO(volumeName)
+		if err != nil {
+			nc.logger.WithError(err).Warnf("Failed to get volume %v for pre-upgrade snapshot hashing", volumeName)
+			continue
+		}
+		if volume.Status.OwnerID != nc.controllerID {
+			continue
+		}
+
+		nc.enqueueSnapshotHashEvent(snapshot, volume)
+	}
 }
 
 func (nc *NodeController) enqueueSnapshotHashEvent(currentSnapshot *longhorn.Snapshot, volume *longhorn.Volume) {
@@ -1151,6 +1192,25 @@ func (nc *NodeController) syncInstanceManagers(node *longhorn.Node) error {
 			if err != nil {
 				return err
 			}
+			liveUpgradeInProgress := false
+			if imType == longhorn.InstanceManagerTypeAllInOne && types.IsDataEngineV2(dataEngine) && len(imMap) > 0 {
+				liveUpgradeInProgress, err = hasPendingOrActiveInstanceManagerUpgradeOnNode(nc.ds, node.Name)
+				if err != nil {
+					return errors.Wrapf(err, "failed to check instance manager upgrade for node %v", node.Name)
+				}
+				if !liveUpgradeInProgress {
+					liveUpgradeInProgress, err = hasPendingOrActiveInstanceManagerUpgradeControl(nc.ds)
+					if err != nil {
+						return errors.Wrapf(err, "failed to check instance manager upgrade control for node %v", node.Name)
+					}
+				}
+				if liveUpgradeInProgress {
+					// Keep existing v2 AIO IMs during rolling live upgrade. Otherwise
+					// default image mismatch would let the node controller delete/recreate
+					// IMs on nodes that the IMUC has not selected yet.
+					defaultInstanceManagerCreated = true
+				}
+			}
 			for _, im := range imMap {
 				if im.Labels[types.GetLonghornLabelKey(types.LonghornLabelNode)] != im.Spec.NodeID {
 					return fmt.Errorf("instance manager %v nodeID %v is not consistent with the label %v=%v",
@@ -1169,7 +1229,9 @@ func (nc *NodeController) syncInstanceManagers(node *longhorn.Node) error {
 
 				cleanupRequired := true
 
-				if (im.Spec.Image == defaultInstanceManagerImage || im.Spec.Image == nc.instanceManagerImage) && im.Spec.DataEngine == dataEngine {
+				if liveUpgradeInProgress {
+					cleanupRequired = false
+				} else if (im.Spec.Image == defaultInstanceManagerImage || im.Spec.Image == nc.instanceManagerImage) && im.Spec.DataEngine == dataEngine {
 					// Keep default instance manager or instance manager matching argument image (during rolling update)
 					defaultInstanceManagerCreated = true
 					cleanupRequired = false

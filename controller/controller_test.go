@@ -133,6 +133,9 @@ var _ = Suite(&TestSuite{})
 
 func (s *TestSuite) SetUpTest(c *C) {
 	logrus.SetLevel(logrus.DebugLevel)
+	sourceIMSPDKTargetReadyProbeDuration = 0
+	sourceIMSPDKTargetReadyProbeInterval = time.Millisecond
+	ensureSPDKTargetIsReady = (*InstanceManagerUpgradeController).ensureSPDKTargetIsReady
 }
 
 func newSetting(name, value string) *longhorn.Setting {

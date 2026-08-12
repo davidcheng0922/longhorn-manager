@@ -2171,11 +2171,8 @@ func (s *TestSuite) TestProcessEngineSwitchoverStopsOldEngineAfterSwitchoverComp
 	c.Assert(replica.Spec.MigrationEngineName, Equals, "")
 }
 
-// TestProcessEngineSwitchoverCleanupUsesActiveEngine verifies that once
-// switchover is already completed, the cleanup branch uses the Active flag to
-// choose the current engine even if multiple engines temporarily share the same
-// node. This covers reverse-switchover recovery where a remount/reattach can
-// leave both engines on the target node.
+// TestProcessEngineSwitchoverCleanupUsesActiveEngine verifies that cleanup
+// uses the Active flag to choose the current engine after switchover.
 func (s *TestSuite) TestProcessEngineSwitchoverCleanupUsesActiveEngine(c *C) {
 	vc, lhClient, engineIndexer, v, currentEngine, migrationEngine, replica, ef := setupSwitchoverTestInfra(c)
 
@@ -2185,8 +2182,7 @@ func (s *TestSuite) TestProcessEngineSwitchoverCleanupUsesActiveEngine(c *C) {
 	v.Spec.NodeID = TestNode1
 	v.Status.CurrentNodeID = TestNode1
 
-	// Both engines are temporarily on the target engine node after a reverse
-	// switchover/remount cycle, but only the new current engine is Active.
+	// Only the new current engine is Active.
 	currentEngine.Spec.Active = false
 	currentEngine.Spec.NodeID = TestNode2
 	currentEngine.Spec.DesireState = longhorn.InstanceStateRunning
