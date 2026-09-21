@@ -376,3 +376,33 @@ func TestCreateOrUpdateLonghornVersionSettingV2IMLiveUpgradeSupport(t *testing.T
 	assert.Equal(t, "v1.13.0", updated.Value)
 	assert.NotContains(t, updated.Annotations, types.GetLonghornLabelKey(types.V2InstanceManagerLiveUpgradeUnsupported))
 }
+
+func TestCreateOrUpdateLonghornVersionSettingV2IMLiveUpgradeSupportFromPrerelease(t *testing.T) {
+	originalVersion := meta.Version
+	t.Cleanup(func() { meta.Version = originalVersion })
+
+	for _, sourceVersion := range []string{"v1.12.2-dev-20260906", "v1.12.2-rc0"} {
+		t.Run(sourceVersion, func(t *testing.T) {
+			lhClient := lhfake.NewSimpleClientset() // nolint: staticcheck
+			setting := &longhorn.Setting{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: string(types.SettingNameCurrentLonghornVersion),
+					Annotations: map[string]string{
+						types.GetLonghornLabelKey(types.V2InstanceManagerLiveUpgradeUnsupported): "true",
+					},
+				},
+				Value: sourceVersion,
+			}
+			_, err := lhClient.LonghornV1beta2().Settings(TestNamespace).Create(context.TODO(), setting, metav1.CreateOptions{})
+			require.NoError(t, err)
+
+			meta.Version = "v1.13.0"
+			require.NoError(t, CreateOrUpdateLonghornVersionSetting(TestNamespace, lhClient))
+
+			updated, err := lhClient.LonghornV1beta2().Settings(TestNamespace).Get(context.TODO(), string(types.SettingNameCurrentLonghornVersion), metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, "v1.13.0", updated.Value)
+			assert.NotContains(t, updated.Annotations, types.GetLonghornLabelKey(types.V2InstanceManagerLiveUpgradeUnsupported))
+		})
+	}
+}

@@ -185,7 +185,7 @@ func CreateOrUpdateLonghornVersionSetting(namespace string, lhClient lhclientset
 	if s.Value != meta.Version {
 		// Mark upgrades from a source release that does not support v2 instance
 		// manager live upgrade. A later upgrade from a supported source clears it.
-		if s.Value != "" && semver.Compare(s.Value, types.MinimumLonghornVersionForV2InstanceManagerLiveUpgrade) < 0 {
+		if s.Value != "" && semver.Compare(withoutPrerelease(s.Value), types.MinimumLonghornVersionForV2InstanceManagerLiveUpgrade) < 0 {
 			if s.Annotations == nil {
 				s.Annotations = make(map[string]string)
 			}
@@ -209,6 +209,17 @@ func CreateOrUpdateLonghornVersionSetting(namespace string, lhClient lhclientset
 		return err
 	}
 	return nil
+}
+
+// withoutPrerelease returns the release portion of a semantic version. A dev or
+// release-candidate build of the minimum supported release contains the same
+// feature set for this compatibility check, so its prerelease suffix must not
+// make it look older than that release.
+func withoutPrerelease(version string) string {
+	if index := strings.IndexByte(version, '-'); index >= 0 {
+		return version[:index]
+	}
+	return version
 }
 
 func CheckUpgradePath(namespace string, lhClient lhclientset.Interface, eventRecorder record.EventRecorder, enableUpgradeVersionCheck bool) error {
