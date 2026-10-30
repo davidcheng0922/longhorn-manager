@@ -489,6 +489,16 @@ func (efc *EngineFrontendController) syncEngineFrontend(key string) (err error) 
 
 			if err := c.EngineFrontendSwitchOverTarget(ef.Spec.DataEngine, ef.Name, targetAddress, ef.Spec.EngineName, string(phase)); err != nil {
 				efc.recordEngineFrontendSwitchoverFailureEvent(ef, switchoverFailureSwitch, targetAddress, err)
+				if phase == longhorn.EngineFrontendSwitchoverPhasePromoting && shouldRestartSwitchoverAfterPromotingFailure(err) {
+					// Restart from preparing to reconnect the initiator, since the
+					// target may have been recreated (e.g. on a new port) after preparing.
+					// Persist explicitly since the defer skips updates on error.
+					log.WithError(err).Warn("Promoting phase failed to find the new target path, resetting switchover phase to restart from preparing")
+					ef.Status.SwitchoverPhase = longhorn.EngineFrontendSwitchoverPhaseNone
+					if _, updateErr := efc.ds.UpdateEngineFrontendStatus(ef); updateErr != nil {
+						log.WithError(updateErr).Warn("Failed to reset switchover phase after promoting failure")
+					}
+				}
 				return errors.Wrapf(err, "failed to execute switchover phase %v for engine frontend %v", phase, ef.Name)
 			}
 
@@ -1290,4 +1300,26 @@ const v2ExpansionInProgressMsg = "expansion is in progress"
 
 func isV2ExpansionInProgressError(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), v2ExpansionInProgressMsg)
+}
+
+// Promoting failures where the initiator has no path to the new target, matched
+// by message since errors.Is is unavailable across gRPC boundaries.
+const (
+	// SPDK engine's ErrSwitchOverTargetPathNotFound.
+	v2SwitchoverTargetPathNotFoundMsg = "switchover target path not found"
+	// Returned by older SPDK engines (e.g. v1.12.x IMs during live upgrade).
+	v2SwitchoverPromotingReloadFailedMsg = "failed to reload nvme device info during promoting phase"
+)
+
+// shouldRestartSwitchoverAfterPromotingFailure returns true when the promoting
+// phase failed to find the new target path. Retrying promoting cannot create
+// the path, so the switchover restarts from preparing to reconnect the new
+// target, e.g. after it was recreated on a new port.
+func shouldRestartSwitchoverAfterPromotingFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, v2SwitchoverTargetPathNotFoundMsg) ||
+		strings.Contains(msg, v2SwitchoverPromotingReloadFailedMsg)
 }
