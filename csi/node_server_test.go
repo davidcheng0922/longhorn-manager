@@ -109,6 +109,31 @@ func TestGetV2VolumeEndpointForNode(t *testing.T) {
 			expected: "/dev/longhorn/vol-b",
 		},
 		{
+			name:   "shared block selects own node endpoint",
+			nodeID: "node-b",
+			volume: &longhornclient.Volume{
+				Name:        "vol-d",
+				SharedBlock: true,
+				Controllers: []longhornclient.Controller{
+					{HostId: "node-a", Endpoint: "/dev/longhorn/vol-d-a"},
+					{HostId: "node-b", Endpoint: "/dev/longhorn/vol-d-b"},
+				},
+			},
+			expected: "/dev/longhorn/vol-d-b",
+		},
+		{
+			name:   "shared block does not fall back to another node endpoint",
+			nodeID: "node-b",
+			volume: &longhornclient.Volume{
+				Name:        "vol-e",
+				SharedBlock: true,
+				Controllers: []longhornclient.Controller{
+					{HostId: "node-a", Endpoint: "/dev/longhorn/vol-e"},
+				},
+			},
+			expectError: true,
+		},
+		{
 			name:   "migratable does not fall back to another node endpoint",
 			nodeID: "node-b",
 			volume: &longhornclient.Volume{

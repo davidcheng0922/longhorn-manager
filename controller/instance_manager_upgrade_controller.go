@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1632,6 +1633,10 @@ func isLiveUpgradeRelocatableVolume(volume *longhorn.Volume) bool {
 	if volume.Spec.Frontend == longhorn.VolumeFrontendEmpty || volume.Spec.DisableFrontend || volume.Status.FrontendDisabled {
 		return false
 	}
+	// The engine of a shared block volume is never relocated.
+	if util.IsSharedBlockVolume(volume) {
+		return false
+	}
 
 	return true
 }
@@ -1709,6 +1714,14 @@ func (imuc *InstanceManagerUpgradeController) validateNodeSupportsLiveUpgrade(no
 				return fmt.Errorf("%w: DR volume %v has no replica outside upgrade node %v; single-replica or co-located DR volumes are not supported for live upgrade",
 					errUpgradeUnsupported, volume.Name, nodeID)
 			}
+		}
+		// The engine of a shared block volume cannot be relocated, and its engine
+		// frontends cannot switch over, so the instance manager restart would
+		// interrupt the IO of every attached node.
+		if util.IsSharedBlockVolume(volume) &&
+			(volume.Status.CurrentNodeID == nodeID || volume.Status.CurrentEngineNodeID == nodeID || slices.Contains(volume.Status.FrontendNodeIDs, nodeID)) {
+			return fmt.Errorf("%w: node %v has shared block volume %v, which is not supported for live upgrade",
+				errUpgradeUnsupported, nodeID, volume.Name)
 		}
 		_, hasShardOnNode := shardedVolumesOnNode[volume.Name]
 		if volume.Status.CurrentNodeID != nodeID && volume.Status.CurrentEngineNodeID != nodeID && !hasShardOnNode {

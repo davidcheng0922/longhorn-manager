@@ -346,6 +346,14 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	vol.TopologyRequirement = topologyTerms
 
+	if vol.SharedBlock {
+		for _, cap := range volumeCaps {
+			if cap.GetBlock() == nil {
+				return nil, status.Errorf(codes.InvalidArgument, "shared block volume %s only supports the block volume mode", volumeID)
+			}
+		}
+	}
+
 	if err = cs.checkAndPrepareBackingImage(volumeID, vol.BackingImage, volumeParameters, vol.DataEngine); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -616,7 +624,7 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 
 	return cs.publishVolume(volume, nodeID, attachmentID, func() error {
 		checkVolumePublished := func(vol *longhornclient.Volume) bool {
-			isRegularRWXVolume := vol.AccessMode == string(longhorn.AccessModeReadWriteMany) && !vol.Migratable
+			isRegularRWXVolume := vol.AccessMode == string(longhorn.AccessModeReadWriteMany) && !vol.Migratable && !vol.SharedBlock
 			attachment, ok := vol.VolumeAttachment.Attachments[attachmentID]
 			if isRegularRWXVolume {
 				return ok && attachment.Satisfied

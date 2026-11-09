@@ -156,6 +156,21 @@ func getVolumeOptions(volumeID string, volOptions map[string]string) (*longhornc
 		vol.Migratable = isMigratable
 	}
 
+	if sharedBlock, ok := volOptions["sharedBlock"]; ok {
+		isSharedBlock, err := strconv.ParseBool(sharedBlock)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid parameter sharedBlock")
+		}
+
+		if isSharedBlock && vol.AccessMode != string(longhorn.AccessModeReadWriteMany) {
+			logrus.Infof("Cannot mark volume %v as shared block, "+
+				"since access mode is not RWX proceeding with non shared block volume creation", volumeID)
+			volOptions["sharedBlock"] = strconv.FormatBool(false)
+			isSharedBlock = false
+		}
+		vol.SharedBlock = isSharedBlock
+	}
+
 	if encrypted, ok := volOptions["encrypted"]; ok {
 		isEncrypted, err := strconv.ParseBool(encrypted)
 		if err != nil {

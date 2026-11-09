@@ -640,6 +640,19 @@ func (vac *VolumeAttachmentController) shouldDoDetach(va *longhorn.VolumeAttachm
 	if vol.Status.Robustness == longhorn.VolumeRobustnessFaulted {
 		return true
 	}
+	// A shared block volume stays attached, with its engine on vol.Spec.NodeID,
+	// as long as any node still requests it with the current frontend setting.
+	// The engine frontends on the requesting nodes are managed by the volume
+	// controller.
+	if util.IsSharedBlockVolume(vol) {
+		for _, attachmentTicket := range va.Spec.AttachmentTickets {
+			if verifyAttachmentParameters(attachmentTicket.Parameters, vol) {
+				return false
+			}
+		}
+		log.Info("Should detach shared block volume because there is no matching attachment ticket")
+		return true
+	}
 	if util.IsMigratableVolume(vol) && util.IsVolumeMigrating(vol) {
 		// if the volume is migrating, the detachment will be handled by handleVolumeMigration()
 		return false
@@ -887,6 +900,31 @@ func (vac *VolumeAttachmentController) updateStatusForDesiredAttachingAttachment
 		return
 	}
 
+	if isWorkloadTicketOfSharedBlockVolume(attachmentTicket, vol) {
+		if vol.Status.State == longhorn.VolumeStateAttached &&
+			verifyAttachmentParameters(attachmentTicket.Parameters, vol) &&
+			vac.isVolumeAvailableOnNode(vol.Name, attachmentTicket.NodeID) {
+			attachmentTicketStatus.Satisfied = true
+			attachmentTicketStatus.Conditions = types.SetCondition(
+				attachmentTicketStatus.Conditions,
+				longhorn.AttachmentStatusConditionTypeSatisfied,
+				longhorn.ConditionStatusTrue,
+				"",
+				"",
+			)
+			return
+		}
+		attachmentTicketStatus.Satisfied = false
+		attachmentTicketStatus.Conditions = types.SetCondition(
+			attachmentTicketStatus.Conditions,
+			longhorn.AttachmentStatusConditionTypeSatisfied,
+			longhorn.ConditionStatusFalse,
+			"",
+			fmt.Sprintf("waiting for the shared block volume to be available on node %v", attachmentTicket.NodeID),
+		)
+		return
+	}
+
 	if vol.Status.CurrentNodeID == "" || vol.Status.State != longhorn.VolumeStateAttached {
 		attachmentTicketStatus.Satisfied = false
 		attachmentTicketStatus.Conditions = types.SetCondition(
@@ -1025,6 +1063,13 @@ func isMigratingCSIAttacherTicket(attachmentTicket *longhorn.AttachmentTicket, v
 	isCSIAttacherTicket := attachmentTicket.Type == longhorn.AttacherTypeCSIAttacher
 	isMigratingTicket := attachmentTicket.NodeID == vol.Status.CurrentMigrationNodeID
 	return util.IsMigratableVolume(vol) && util.IsVolumeMigrating(vol) && isCSIAttacherTicket && isMigratingTicket
+}
+
+// isWorkloadTicketOfSharedBlockVolume returns true if the ticket requests a
+// shared block volume to be available on its node.
+func isWorkloadTicketOfSharedBlockVolume(attachmentTicket *longhorn.AttachmentTicket, vol *longhorn.Volume) bool {
+	return util.IsSharedBlockVolume(vol) &&
+		(attachmentTicket.Type == longhorn.AttacherTypeCSIAttacher || attachmentTicket.Type == longhorn.AttacherTypeLonghornAPI)
 }
 
 func isVolumeShareAvailable(vol *longhorn.Volume) bool {

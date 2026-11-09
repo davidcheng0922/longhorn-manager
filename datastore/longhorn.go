@@ -999,11 +999,7 @@ func (s *DataStore) AreAllRWXVolumesDetached() (bool, error) {
 		return false, err
 	}
 	for _, volume := range volumes {
-		if volume.Spec.AccessMode != longhorn.AccessModeReadWriteMany {
-			continue
-		}
-
-		if volume.Spec.Migratable {
+		if !util.IsRegularRWXVolume(volume) {
 			continue
 		}
 
@@ -1620,7 +1616,7 @@ func (s *DataStore) IsRegularRWXVolume(volumeName string) (bool, error) {
 		}
 		return false, err
 	}
-	return v.Spec.AccessMode == longhorn.AccessModeReadWriteMany && !v.Spec.Migratable, nil
+	return util.IsRegularRWXVolume(v), nil
 }
 
 func MarshalLabelToVolumeRecurringJob(labels map[string]string) map[string]*longhorn.VolumeRecurringJob {
