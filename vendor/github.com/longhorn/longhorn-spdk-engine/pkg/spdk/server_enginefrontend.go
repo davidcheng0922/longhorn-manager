@@ -40,7 +40,7 @@ func (s *Server) EngineFrontendSuspend(ctx context.Context, req *spdkrpc.EngineF
 	spdkClient := s.spdkClient
 	s.RUnlock()
 
-	err = ef.Suspend(spdkClient)
+	err = ef.SuspendWithOptions(spdkClient, req.NoFlush, req.NoLockFs)
 	if err != nil {
 		return nil, toEngineFrontendLifecycleGRPCError(err, "failed to suspend engine frontend %v", req.Name)
 	}
@@ -307,7 +307,7 @@ func (s *Server) EngineFrontendCreate(ctx context.Context, req *spdkrpc.EngineFr
 	}
 
 	ef := NewEngineFrontend(req.Name, req.EngineName, req.VolumeName, req.Frontend, req.SpecSize,
-		req.UblkQueueDepth, req.UblkNumberOfQueue, s.updateChs[types.InstanceTypeEngineFrontend], s.newServiceClient)
+		req.UblkQueueDepth, req.UblkNumberOfQueue, s.updateChs[types.InstanceTypeEngineFrontend], s.newServiceClient, req.SharedBlock)
 	ef.NvmeTcpFrontend.NrIoQueues = req.NvmeTcpNrIoQueues
 	ef.metadataDir = s.metadataDir
 
@@ -340,6 +340,9 @@ func (s *Server) EngineFrontendCreate(ctx context.Context, req *spdkrpc.EngineFr
 	if createErr != nil &&
 		(errors.Is(createErr, ErrEngineFrontendCreateInvalidArgument) ||
 			errors.Is(createErr, ErrEngineFrontendCreatePrecondition)) {
+		// The frontend is dropped without Delete, so stop its background
+		// goroutines here.
+		close(ef.stopCh)
 		// Hard error - Create did not mutate anything.  Restore the
 		// evicted efs so valid ongoing recoveries are not permanently lost.
 		if len(evictedEfs) > 0 {

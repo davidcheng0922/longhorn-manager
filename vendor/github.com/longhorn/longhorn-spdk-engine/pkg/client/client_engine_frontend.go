@@ -15,7 +15,7 @@ import (
 
 // EngineFrontendCreate creates and starts an engine frontend for an existing engine.
 func (c *SPDKClient) EngineFrontendCreate(name, volumeName, engineName, frontend string, specSize uint64, targetAddress string,
-	ublkQueueDepth, ublkNumberOfQueue, nvmeTcpNrIoQueues int32) (*api.EngineFrontend, error) {
+	ublkQueueDepth, ublkNumberOfQueue, nvmeTcpNrIoQueues int32, sharedBlock bool) (*api.EngineFrontend, error) {
 	if name == "" {
 		return nil, fmt.Errorf("failed to start engine frontend: missing required parameter name")
 	}
@@ -45,6 +45,7 @@ func (c *SPDKClient) EngineFrontendCreate(name, volumeName, engineName, frontend
 		UblkQueueDepth:    ublkQueueDepth,
 		UblkNumberOfQueue: ublkNumberOfQueue,
 		NvmeTcpNrIoQueues: nvmeTcpNrIoQueues,
+		SharedBlock:       sharedBlock,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to start engine frontend")
@@ -147,6 +148,16 @@ func (c *SPDKClient) EngineFrontendSwitchOver(name, newEngineName, newTargetAddr
 
 // EngineFrontendSuspend suspends I/O on an engine frontend.
 func (c *SPDKClient) EngineFrontendSuspend(name string) error {
+	return c.EngineFrontendSuspendWithOptions(name, false, false)
+}
+
+// EngineFrontendSuspendWithOptions suspends I/O on an engine frontend. By default the
+// suspension also syncs and freezes the mounted filesystem, which can take longer than the
+// dmsetup timeout under heavy writes. noFlush and noLockFS correspond to
+// `dmsetup suspend --noflush` and `--nolockfs`: for the linear dm device, either of them
+// skips the filesystem sync and freeze, while the kernel still waits for the I/O that is
+// already in flight to complete.
+func (c *SPDKClient) EngineFrontendSuspendWithOptions(name string, noFlush, noLockFS bool) error {
 	if name == "" {
 		return fmt.Errorf("failed to suspend engine frontend: missing required parameter")
 	}
@@ -156,7 +167,9 @@ func (c *SPDKClient) EngineFrontendSuspend(name string) error {
 	defer cancel()
 
 	_, err := client.EngineFrontendSuspend(ctx, &spdkrpc.EngineFrontendSuspendRequest{
-		Name: name,
+		Name:     name,
+		NoFlush:  noFlush,
+		NoLockFs: noLockFS,
 	})
 	if err != nil {
 		return errors.Wrapf(err, "failed to suspend engine frontend %v", name)

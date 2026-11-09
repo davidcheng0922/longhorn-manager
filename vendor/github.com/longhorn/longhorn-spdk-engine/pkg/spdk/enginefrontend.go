@@ -19,6 +19,7 @@ import (
 	"github.com/longhorn/types/pkg/generated/spdkrpc"
 
 	commonbitmap "github.com/longhorn/go-common-libs/bitmap"
+	commonnet "github.com/longhorn/go-common-libs/net"
 	spdkclient "github.com/longhorn/go-spdk-helper/pkg/spdk/client"
 	helpertypes "github.com/longhorn/go-spdk-helper/pkg/types"
 
@@ -42,6 +43,13 @@ type EngineFrontend struct {
 
 	Frontend string
 	Endpoint string
+
+	// SharedBlock indicates the engine target is shared with engine frontends
+	// on other nodes (RWX block volume). Only the NVMe/TCP blockdev frontend and
+	// the empty frontend of the maintenance mode are supported, and target
+	// switchover is rejected because its ANA state changes would affect the
+	// other hosts.
+	SharedBlock bool
 
 	// EngineIP is the IP address of the node running the engine's SPDK service.
 	// It is set during Create for all frontend types (including FrontendEmpty)
@@ -160,6 +168,10 @@ const (
 	// alternates between reading the device and failing on it, so a single good
 	// read is not recovery and must not put the deadline out of reach.
 	transientDeviceStateClearInterval = 30 * time.Second
+
+	// sharedBlockRegisterInterval is how often a running shared block engine
+	// frontend registers to the engine again.
+	sharedBlockRegisterInterval = 30 * time.Second
 )
 
 const (
@@ -244,7 +256,7 @@ func getUblkNumberOfQueue(ublkNumberOfQueue int32) int32 {
 }
 
 func NewEngineFrontend(engineFrontendName, engineName, volumeName, frontend string, specSize uint64, ublkQueueDepth, ublkNumberOfQueue int32,
-	engineFrontendUpdateCh chan interface{}, newServiceClient ServiceClientFactory) *EngineFrontend {
+	engineFrontendUpdateCh chan interface{}, newServiceClient ServiceClientFactory, sharedBlock bool) *EngineFrontend {
 	if newServiceClient == nil {
 		newServiceClient = GetServiceClient
 	}
@@ -255,6 +267,7 @@ func NewEngineFrontend(engineFrontendName, engineName, volumeName, frontend stri
 		"volumeName":         volumeName,
 		"frontend":           frontend,
 		"specSize":           specSize,
+		"sharedBlock":        sharedBlock,
 	})
 
 	if types.IsUblkFrontend(frontend) {
@@ -276,7 +289,7 @@ func NewEngineFrontend(engineFrontendName, engineName, volumeName, frontend stri
 		UblkNumberOfQueue: getUblkNumberOfQueue(ublkNumberOfQueue),
 	}
 
-	return &EngineFrontend{
+	ef := &EngineFrontend{
 		Name:        engineFrontendName,
 		EngineName:  engineName,
 		VolumeName:  volumeName,
@@ -285,6 +298,8 @@ func NewEngineFrontend(engineFrontendName, engineName, volumeName, frontend stri
 		SpecSize:    specSize,
 
 		Frontend: frontend,
+
+		SharedBlock: sharedBlock,
 
 		NvmeTcpFrontend: nvmeTcpFrontend,
 		NvmeTCPPathMap:  map[string]*NvmeTCPPath{},
@@ -299,6 +314,10 @@ func NewEngineFrontend(engineFrontendName, engineName, volumeName, frontend stri
 
 		newServiceClient: newServiceClient,
 	}
+	if sharedBlock {
+		go ef.keepRegisteredToEngine()
+	}
+	return ef
 }
 
 func getStableVolumeNQN(volumeName string) string {
@@ -311,6 +330,10 @@ func getStableVolumeNGUID(volumeName string) string {
 
 func getStableVolumeNsUUID(volumeName string) string {
 	return generateNsUUID("volume-" + volumeName)
+}
+
+func getStableVolumeRaidUUID(volumeName string) string {
+	return generateNsUUID("raid-" + volumeName)
 }
 
 func getEffectiveVolumeTargetIdentity(volumeName, volumeNQN, volumeNGUID string) (string, string) {
@@ -832,6 +855,11 @@ func (ef *EngineFrontend) Delete(spdkClient *spdkclient.Client) (err error) {
 }
 
 func (ef *EngineFrontend) handleFrontend(spdkClient *spdkclient.Client, targetAddress string) (err error) {
+	// An empty frontend is the maintenance mode, which connects no host.
+	if ef.SharedBlock && ef.Frontend != types.FrontendSPDKTCPBlockdev && ef.Frontend != types.FrontendEmpty {
+		return fmt.Errorf("frontend %s is not supported for shared block engine frontend %s", ef.Frontend, ef.Name)
+	}
+
 	switch ef.Frontend {
 	case types.FrontendEmpty:
 		ef.log.Info("No frontend specified, will not expose bdev for engine")
@@ -934,6 +962,12 @@ func (ef *EngineFrontend) createNvmeTcpFrontend(spdkClient *spdkclient.Client, t
 	disconnectTarget := !ef.isExpanding
 	ef.RUnlock()
 
+	if ef.SharedBlock {
+		if err := ef.registerToEngine(i); err != nil {
+			return errors.Wrapf(err, "failed to register engine frontend %v to engine before connecting", ef.Name)
+		}
+	}
+
 	dmDeviceIsBusy, err = i.StartNvmeTCPInitiator(targetIP, strconv.Itoa(int(targetPort)), true, disconnectTarget)
 	if err != nil {
 		return errors.Wrapf(err, "failed to start NVMe/TCP initiator for engine frontend %v", ef.Name)
@@ -966,6 +1000,65 @@ func (ef *EngineFrontend) getEngineServiceAddress() string {
 	return net.JoinHostPort(ef.EngineIP, strconv.Itoa(types.SPDKServicePort))
 }
 
+// registerToEngine registers the shared block engine frontend to the engine,
+// so that the engine can suspend it.
+func (ef *EngineFrontend) registerToEngine(i *initiator.Initiator) error {
+	ef.RLock()
+	engineName := ef.EngineName
+	engineAddress := ef.getEngineServiceAddress()
+	ef.RUnlock()
+
+	hostNQN, err := i.GetHostNQN()
+	if err != nil {
+		return errors.Wrap(err, "failed to get host NQN")
+	}
+	localIP, err := commonnet.GetPreferredPodIP()
+	if err != nil {
+		return errors.Wrap(err, "failed to get local IP")
+	}
+	address := net.JoinHostPort(localIP, strconv.Itoa(types.SPDKServicePort))
+
+	engineClient, err := ef.newServiceClient(engineAddress)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get SPDK client for engine %s at %s", engineName, engineAddress)
+	}
+	defer func() {
+		if errClose := engineClient.Close(); errClose != nil {
+			ef.log.WithError(errClose).Warn("Failed to close engine SPDK client")
+		}
+	}()
+
+	return engineClient.EngineRegisterFrontend(engineName, ef.Name, address, hostNQN)
+}
+
+// keepRegisteredToEngine periodically registers the running shared block
+// engine frontend to the engine again, so that the registration survives an
+// engine restart and follows an address change of this engine frontend.
+func (ef *EngineFrontend) keepRegisteredToEngine() {
+	ticker := time.NewTicker(sharedBlockRegisterInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ef.stopCh:
+			return
+		case <-ticker.C:
+		}
+
+		ef.RLock()
+		i := ef.initiator
+		ready := ef.State == types.InstanceStateRunning && !ef.isCreating && ef.Frontend == types.FrontendSPDKTCPBlockdev && i != nil
+		ef.RUnlock()
+		if !ready {
+			continue
+		}
+
+		if err := ef.registerToEngine(i); err != nil {
+			ef.log.WithError(err).Warn("Failed to register engine frontend to engine")
+		}
+	}
+}
+
 func (ef *EngineFrontend) getWithoutLock() (res *spdkrpc.EngineFrontend) {
 	res = &spdkrpc.EngineFrontend{
 		Name:       ef.Name,
@@ -975,6 +1068,8 @@ func (ef *EngineFrontend) getWithoutLock() (res *spdkrpc.EngineFrontend) {
 		ActualSize: ef.ActualSize,
 		Frontend:   ef.Frontend,
 		Endpoint:   ef.Endpoint,
+
+		SharedBlock: ef.SharedBlock,
 
 		State:                 string(ef.State),
 		ErrorMsg:              ef.ErrorMsg,
@@ -1396,11 +1491,12 @@ func (ef *EngineFrontend) syncDmDeviceSizeForExpansion(size uint64) (err error) 
 
 	if ef.Endpoint != "" {
 		ef.log.Infof("Suspending engine frontend for dm resize to %v", size)
-		// noflush+nolockfs: the reload only grows the existing target's length, the
-		// underlying device is unchanged, so there is no need to wait for in-flight
-		// I/O to drain or freeze a mounted fs before swapping the table. A flushing
-		// suspend can block past DmsetupTimeout under sustained write throughput.
-		if err := ef.initiator.Suspend(true, true, helpertypes.DmsetupTimeout); err != nil {
+		// noflush+nolockfs: skip syncing and freezing a mounted fs. The reload only grows
+		// the existing target's length on the same underlying device, so the filesystem
+		// does not need to be quiesced, and a filesystem sync can block past
+		// DmsetupTimeout under sustained write throughput. The kernel still waits for the
+		// I/O that is already in flight to complete before the suspend returns.
+		if err := ef.suspend(true, true); err != nil {
 			return errors.Wrapf(err, "failed to suspend engine frontend %s for dm resize to %v", ef.Name, size)
 		}
 
@@ -1421,8 +1517,18 @@ func (ef *EngineFrontend) syncDmDeviceSizeForExpansion(size uint64) (err error) 
 	return nil
 }
 
-// SuspendFrontend suspends the engine frontend. IO operations will be suspended.
-func (ef *EngineFrontend) Suspend(_ *spdkclient.Client) (err error) {
+// Suspend suspends the engine frontend. IO operations will be suspended. The suspension
+// also syncs and freezes the mounted filesystem.
+func (ef *EngineFrontend) Suspend(spdkClient *spdkclient.Client) error {
+	return ef.SuspendWithOptions(spdkClient, false, false)
+}
+
+// SuspendWithOptions suspends the engine frontend. noFlush and noLockFS correspond to
+// `dmsetup suspend --noflush` and `--nolockfs`. For the linear dm device, either of them
+// skips syncing and freezing the mounted filesystem, which can take longer than the
+// dmsetup timeout under heavy writes. The kernel always waits for the IO that is already
+// in flight to complete before the suspend returns.
+func (ef *EngineFrontend) SuspendWithOptions(_ *spdkclient.Client, noFlush, noLockFS bool) (err error) {
 	ef.Lock()
 	defer func() {
 		if err != nil {
@@ -1450,6 +1556,12 @@ func (ef *EngineFrontend) Suspend(_ *spdkclient.Client) (err error) {
 	if ef.isSwitchingOver {
 		return errors.Wrapf(ErrSwitchOverTargetPrecondition, "engine frontend %s is switching over target", ef.Name)
 	}
+	// A shared block engine frontend registers to the engine before it connects
+	// to the engine target, so the engine may suspend it while it is creating.
+	// Fail the suspension, as the engine frontend can connect after it.
+	if ef.SharedBlock && ef.isCreating {
+		return errors.Wrapf(ErrEngineFrontendLifecyclePrecondition, "engine frontend %s is creating", ef.Name)
+	}
 
 	ef.log.Info("Suspending engine frontend")
 
@@ -1464,7 +1576,7 @@ func (ef *EngineFrontend) Suspend(_ *spdkclient.Client) (err error) {
 			return errors.Wrapf(err, "failed to create initiator for suspending engine %s", ef.Name)
 		}
 
-		return i.Suspend(false, false, helpertypes.DmsetupTimeout)
+		return ef.suspendWithInitiator(i, noFlush, noLockFS)
 	default:
 		// TODO: support ublk frontend suspend
 		return errors.Wrapf(ErrEngineFrontendLifecycleUnimplemented, "suspend frontend %s is unimplemented", ef.Frontend)
@@ -1526,6 +1638,9 @@ func (ef *EngineFrontend) Resume(_ *spdkclient.Client) (err error) {
 // suspend/resume separately.
 // If newEngineName is empty, the function will try to resolve it via targetAddress.
 func (ef *EngineFrontend) SwitchOverTarget(spdkClient *spdkclient.Client, newEngineName, targetAddress, switchoverPhase string) (err error) {
+	if ef.SharedBlock {
+		return errors.Wrapf(ErrSwitchOverTargetInvalidInput, "target switchover is not supported for shared block engine frontend %s", ef.Name)
+	}
 	if targetAddress == "" {
 		return errors.Wrapf(ErrSwitchOverTargetInvalidInput, "target address is required for engine frontend %s switchover", ef.Name)
 	}
@@ -2163,7 +2278,7 @@ func (ef *EngineFrontend) switchOverTargetBlockdevPhased(phase SwitchoverPhase, 
 		// Step 2: Reload NVMe device info.
 		transportServiceID := strconv.Itoa(int(newTargetPort))
 		if reloadErr := ef.loadInitiatorNVMeDeviceInfo(newTargetIP, transportServiceID, newNQN); reloadErr != nil {
-			promoteErr := errors.Wrapf(ErrSwitchOverTargetInternal,
+			promoteErr := errors.Wrapf(ErrSwitchOverRestartRequired,
 				"failed to reload NVMe device info during promoting phase for %s: %v",
 				ef.Name, reloadErr)
 			// Revert ANA states so the old path becomes functional again.
@@ -2422,6 +2537,15 @@ func (ef *EngineFrontend) snapshotOperation(inputSnapshotName string, snapshotOp
 		ef.Unlock()
 		return "", errors.Wrapf(ErrSwitchOverTargetPrecondition, "engine frontend %s is switching over target", ef.Name)
 	}
+	// A shared block engine suspends the other engine frontends only, so the
+	// requesting one must suspend itself. Otherwise the engine would try to
+	// suspend it while it holds its lock here. An empty frontend (maintenance
+	// mode) connects no host and never registers, so it needs no suspension.
+	if ef.SharedBlock && snapshotOp == SnapshotOperationCreate && ef.Frontend != types.FrontendEmpty &&
+		(ef.State != types.InstanceStateRunning || !ef.isSuspendSupported()) {
+		ef.Unlock()
+		return "", errors.Wrapf(ErrEngineFrontendLifecyclePrecondition, "engine frontend %s must be running with a suspendable frontend to create a snapshot of a shared block volume", ef.Name)
+	}
 
 	defer func() {
 		ef.Unlock()
@@ -2448,6 +2572,10 @@ func (ef *EngineFrontend) snapshotOperation(inputSnapshotName string, snapshotOp
 		}
 	}()
 
+	// suspendedFrontendName tells the engine that this engine frontend has
+	// suspended itself, so a shared block engine does not suspend it again.
+	suspendedFrontendName := ""
+
 	// Pause the IO, flush outstanding IO and attempt to synchronize filesystem by suspending the NVMe initiator
 	if snapshotOp == SnapshotOperationCreate {
 		if ef.isSuspendSupported() {
@@ -2455,6 +2583,7 @@ func (ef *EngineFrontend) snapshotOperation(inputSnapshotName string, snapshotOp
 			if err := ef.suspend(false, false); err != nil {
 				return "", errors.Wrapf(err, "failed to suspend before the snapshot operation %s for snapshot %q", snapshotOp, inputSnapshotName)
 			}
+			suspendedFrontendName = ef.Name
 			defer func() {
 				ef.log.Infof("Resuming after the snapshot operation %s for snapshot %s", snapshotOp, inputSnapshotName)
 				if resumeErr := ef.resume(); resumeErr != nil {
@@ -2478,7 +2607,7 @@ func (ef *EngineFrontend) snapshotOperation(inputSnapshotName string, snapshotOp
 
 	switch snapshotOp {
 	case SnapshotOperationCreate:
-		return engineSpdkClient.EngineSnapshotCreate(ef.EngineName, inputSnapshotName)
+		return engineSpdkClient.EngineSnapshotCreate(ef.EngineName, inputSnapshotName, suspendedFrontendName)
 	case SnapshotOperationDelete:
 		return "", engineSpdkClient.EngineSnapshotDelete(ef.EngineName, inputSnapshotName)
 	case SnapshotOperationRevert:
@@ -2498,7 +2627,27 @@ func (ef *EngineFrontend) suspend(noflush, nolockfs bool) error {
 	if ef.initiator == nil {
 		return fmt.Errorf("initiator is not initialized for engine frontend %s", ef.Name)
 	}
-	return ef.initiator.Suspend(noflush, nolockfs, helpertypes.DmsetupTimeout)
+	return ef.suspendWithInitiator(ef.initiator, noflush, nolockfs)
+}
+
+// suspendWithInitiator suspends the dm device and logs the duration and the result, so that
+// slow or timed-out suspends can be identified.
+func (ef *EngineFrontend) suspendWithInitiator(i *initiator.Initiator, noflush, nolockfs bool) error {
+	start := time.Now()
+	err := i.Suspend(noflush, nolockfs, helpertypes.DmsetupTimeout)
+
+	log := ef.log.WithFields(logrus.Fields{
+		"noflush":   noflush,
+		"nolockfs":  nolockfs,
+		"timeout":   helpertypes.DmsetupTimeout,
+		"elapsedMs": time.Since(start).Milliseconds(),
+	})
+	if err != nil {
+		log.WithError(err).Warn("Failed to suspend the dm device")
+		return err
+	}
+	log.Info("Suspended the dm device")
+	return nil
 }
 
 func (ef *EngineFrontend) resume() error {

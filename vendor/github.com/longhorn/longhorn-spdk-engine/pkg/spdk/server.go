@@ -238,6 +238,12 @@ func (s *Server) tryEnsureSPDKTgtConnectionHealthy() error {
 	return s.clientReconnect()
 }
 
+func (s *Server) getSPDKClient() *spdkclient.Client {
+	s.RLock()
+	defer s.RUnlock()
+	return s.spdkClient
+}
+
 func (s *Server) clientReconnect() error {
 	s.Lock()
 	defer func() {
@@ -770,6 +776,12 @@ func (s *Server) getBackingImage(backingImageName, lvsUUID string) (backingImage
 }
 
 func toSwitchOverGRPCError(err error, format string, args ...interface{}) error {
+	// Check this first so a downstream gRPC code from a failed ANA rollback
+	// does not hide that the caller must restart the switchover from preparing.
+	if errors.Is(err, ErrSwitchOverRestartRequired) {
+		return grpcstatus.Error(grpccodes.Aborted, errors.Wrapf(err, format, args...).Error())
+	}
+
 	code := grpccodes.Internal
 
 	// Preserve downstream gRPC code when available.
@@ -825,8 +837,13 @@ func buildGRPCReplicaAddFrontendSuspendResumeWrapper(efName, efAddress string, l
 			}
 		}()
 
+		// The suspension only needs to block new I/O and drain the in-flight I/O, which the
+		// kernel does regardless of these options. Skip syncing and freezing the
+		// filesystem: neither the rebuild snapshot, which is internal, nor the parent
+		// switch needs a consistent filesystem, and the sync can exceed the dmsetup
+		// timeout under heavy writes.
 		suspended := false
-		if err := efClient.EngineFrontendSuspend(efName); err != nil {
+		if err := efClient.EngineFrontendSuspendWithOptions(efName, true, true); err != nil {
 			if suspendRequired && grpcstatus.Code(errors.UnwrapAll(err)) != grpccodes.Unimplemented {
 				return errors.Wrapf(err, "failed to suspend engine frontend %s before replica add work", efName)
 			}
@@ -1151,7 +1168,7 @@ func (s *Server) recoverEngineFrontends(ctx context.Context) {
 		}
 
 		ef := NewEngineFrontend(record.Name, record.EngineName, record.VolumeName,
-			record.Frontend, record.SpecSize, 0, 0, s.updateChs[types.InstanceTypeEngineFrontend], s.newServiceClient)
+			record.Frontend, record.SpecSize, 0, 0, s.updateChs[types.InstanceTypeEngineFrontend], s.newServiceClient, record.SharedBlock)
 		ef.NvmeTcpFrontend.NrIoQueues = record.NrIoQueues
 		ef.metadataDir = s.metadataDir
 		ef.VolumeNQN = record.VolumeNQN

@@ -1,9 +1,13 @@
 package spdk
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,6 +129,14 @@ type Engine struct {
 	ActualSize uint64
 	Frontend   string
 
+	// SharedBlock allows engine frontends on multiple nodes to connect to the
+	// engine target at the same time (RWX block volume). The target then
+	// accepts a range of controller IDs and persists the NVMe reservation
+	// state.
+	SharedBlock bool
+	// sharedBlockState is only used by a shared block engine.
+	sharedBlockState sharedBlockEngineState
+
 	ctrlrLossTimeout     int
 	fastIOFailTimeoutSec int
 	// backends maps each peer's name to its Backend. Each one provides a base
@@ -181,10 +193,12 @@ type Engine struct {
 	newServiceClient ServiceClientFactory
 }
 
-func NewEngine(engineName, volumeName, frontend string, specSize uint64, engineUpdateCh chan interface{}, snapshotMaxCount int32, newServiceClient ServiceClientFactory) *Engine {
+func NewEngine(engineName, volumeName, frontend string, specSize uint64, engineUpdateCh chan interface{}, snapshotMaxCount int32, newServiceClient ServiceClientFactory,
+	sharedBlock bool, metadataDir string) *Engine {
 	log := logrus.StandardLogger().WithFields(logrus.Fields{
-		"engineName": engineName,
-		"volumeName": volumeName,
+		"engineName":  engineName,
+		"volumeName":  volumeName,
+		"sharedBlock": sharedBlock,
 	})
 
 	roundedSpecSize := util.RoundUp(specSize, helpertypes.MiB)
@@ -207,6 +221,9 @@ func NewEngine(engineName, volumeName, frontend string, specSize uint64, engineU
 		VolumeName: volumeName,
 		Frontend:   frontend,
 		SpecSize:   specSize,
+
+		SharedBlock:      sharedBlock,
+		sharedBlockState: sharedBlockEngineState{metadataDir: metadataDir},
 
 		// TODO: support user-defined values
 		ctrlrLossTimeout:     replicaCtrlrLossTimeoutSec,
@@ -244,6 +261,7 @@ func (e *Engine) Create(spdkClient *spdkclient.Client, replicaAddressMap map[str
 		"replicaAddressMap": replicaAddressMap,
 		"salvageRequested":  salvageRequested,
 		"frontend":          e.Frontend,
+		"sharedBlock":       e.SharedBlock,
 	}).Info("Creating engine")
 
 	requireUpdate := true
@@ -259,6 +277,11 @@ func (e *Engine) Create(spdkClient *spdkclient.Client, replicaAddressMap map[str
 	if e.State != types.InstanceStatePending {
 		requireUpdate = false
 		return nil, fmt.Errorf("invalid state %s for engine %s creation", e.State, e.Name)
+	}
+
+	if e.SharedBlock && e.Frontend == types.FrontendUBLK {
+		requireUpdate = false
+		return nil, fmt.Errorf("frontend %s is not supported for shared block engine %s", e.Frontend, e.Name)
 	}
 
 	if err := e.validateReplicaSize(replicaAddressMap, backendFactory); err != nil {
@@ -303,7 +326,7 @@ func (e *Engine) Create(spdkClient *spdkclient.Client, replicaAddressMap map[str
 	e.checkAndUpdateInfoFromReplicasNoLock()
 
 	e.log.Infof("Connected all available replicas %+v, then launching raid during engine creation", e.backends)
-	if _, err := spdkClient.BdevRaidCreate(e.Name, spdktypes.BdevRaidLevel1, 0, replicaBdevList, ""); err != nil {
+	if _, err := spdkClient.BdevRaidCreate(e.Name, spdktypes.BdevRaidLevel1, 0, replicaBdevList, e.getRaidBdevCreateUUID()); err != nil {
 		return nil, err
 	}
 
@@ -361,8 +384,8 @@ func (e *Engine) createNVMeTCPTarget(spdkClient *spdkclient.Client, superiorPort
 		return errors.Wrapf(err, "failed to blindly stop exposing RAID bdev for engine target %v", e.Name)
 	}
 
-	cntlid := getTargetCntlid(e.NvmeTcpTarget.IP, e.NvmeTcpTarget.Port)
-	if err := e.startExposeNVMeTCPTarget(spdkClient, initialANAState, spdkANAState, cntlid); err != nil {
+	minCntlid, maxCntlid := getTargetCntlidRange(e.NvmeTcpTarget.IP, e.NvmeTcpTarget.Port, e.SharedBlock)
+	if err := e.startExposeNVMeTCPTarget(spdkClient, initialANAState, spdkANAState, minCntlid, maxCntlid); err != nil {
 		// No need to release ports here. The engine will be marked as ERR by
 		// Create's deferred error handler, and Delete will release the ports
 		// when the user cleans up this engine.
@@ -374,12 +397,25 @@ func (e *Engine) createNVMeTCPTarget(spdkClient *spdkclient.Client, superiorPort
 	return nil
 }
 
-func (e *Engine) startExposeNVMeTCPTarget(spdkClient *spdkclient.Client, anaState NvmeTCPANAState, spdkANAState spdktypes.NvmfSubsystemListenerAnaState, cntlid uint16) error {
+func (e *Engine) startExposeNVMeTCPTarget(spdkClient *spdkclient.Client, anaState NvmeTCPANAState, spdkANAState spdktypes.NvmfSubsystemListenerAnaState, minCntlid, maxCntlid uint16) error {
 	nsUUID := getStableVolumeNsUUID(e.VolumeName)
-	e.log.Infof("Starting to expose RAID bdev for engine target %v on %v:%v with ANA state %v, cntlid %v, nsUUID %v",
-		e.Name, e.NvmeTcpTarget.IP, e.NvmeTcpTarget.Port, anaState, cntlid, nsUUID)
-	return spdkClient.StartExposeBdevWithANAState(e.NvmeTcpTarget.Nqn, e.Name, e.NvmeTcpTarget.Nguid, nsUUID,
-		e.NvmeTcpTarget.IP, strconv.Itoa(int(e.NvmeTcpTarget.Port)), spdkANAState, cntlid, cntlid)
+
+	ptplFile := e.getReservationPtplFile()
+	if ptplFile != "" {
+		// SPDK writes the ptpl file but does not create its directory.
+		if err := os.MkdirAll(filepath.Dir(ptplFile), 0755); err != nil {
+			return errors.Wrapf(err, "failed to create reservation ptpl directory for engine target %v", e.Name)
+		}
+		if err := e.prepareReservationPtplFile(ptplFile); err != nil {
+			return err
+		}
+		e.sharedBlockState.reservationPrepared = true
+	}
+
+	e.log.Infof("Starting to expose RAID bdev for engine target %v on %v:%v with ANA state %v, cntlid range [%v, %v], nsUUID %v, ptpl file %q",
+		e.Name, e.NvmeTcpTarget.IP, e.NvmeTcpTarget.Port, anaState, minCntlid, maxCntlid, nsUUID, ptplFile)
+	return spdkClient.StartExposeBdevWithANAStateAndPtplFile(e.NvmeTcpTarget.Nqn, e.Name, e.NvmeTcpTarget.Nguid, nsUUID,
+		e.NvmeTcpTarget.IP, strconv.Itoa(int(e.NvmeTcpTarget.Port)), spdkANAState, minCntlid, maxCntlid, ptplFile)
 }
 
 // connectReplicas connects to each backend's NVMf bdev and populates
@@ -749,6 +785,11 @@ func (e *Engine) getWithoutLock() (res *spdkrpc.Engine) {
 		LastExpansionError:    e.lastExpansionError,
 		LastExpansionFailedAt: e.lastExpansionFailedAt,
 		SnapshotMaxCount:      e.SnapshotMaxCount,
+		SharedBlock:           e.SharedBlock,
+	}
+
+	if e.sharedBlockState.reservationPrepared {
+		res.Reservation = e.getReservationState()
 	}
 
 	if e.NvmeTcpTarget != nil {
@@ -1601,7 +1642,10 @@ const (
 	SnapshotOperationHash   = SnapshotOperationType("snapshot-hash")
 )
 
-func (e *Engine) SnapshotCreate(spdkClient *spdkclient.Client, inputSnapshotName string) (snapshotName string, err error) {
+// SnapshotCreate creates a snapshot. engineFrontendName is the engine frontend
+// requesting the snapshot, which has suspended itself. For a shared block
+// engine, the engine frontends on the other hosts are suspended as well.
+func (e *Engine) SnapshotCreate(spdkClient *spdkclient.Client, inputSnapshotName, engineFrontendName string) (snapshotName string, err error) {
 	e.log.Infof("Creating snapshot %s", inputSnapshotName)
 
 	opts := &api.SnapshotOptions{
@@ -1609,7 +1653,15 @@ func (e *Engine) SnapshotCreate(spdkClient *spdkclient.Client, inputSnapshotName
 		Timestamp:   util.Now(),
 	}
 
-	return e.snapshotOperation(spdkClient, inputSnapshotName, SnapshotOperationCreate, opts)
+	if !e.SharedBlock {
+		return e.snapshotOperation(spdkClient, inputSnapshotName, SnapshotOperationCreate, opts)
+	}
+
+	err = e.withSharedBlockFrontendsSuspended(spdkClient, engineFrontendName, false, false, func() (opErr error) {
+		snapshotName, opErr = e.snapshotOperation(spdkClient, inputSnapshotName, SnapshotOperationCreate, opts)
+		return opErr
+	})
+	return snapshotName, err
 }
 
 func (e *Engine) SnapshotDelete(spdkClient *spdkclient.Client, snapshotName string) (err error) {
@@ -1851,7 +1903,7 @@ func (e *Engine) snapshotOperationWithoutLock(spdkClient *spdkclient.Client, sna
 			retrygo.LastErrorOnly(true),
 		).Do(
 			func() error {
-				_, err := spdkClient.BdevRaidCreate(e.Name, spdktypes.BdevRaidLevel1, 0, replicaBdevList, "")
+				_, err := spdkClient.BdevRaidCreate(e.Name, spdktypes.BdevRaidLevel1, 0, replicaBdevList, e.getRaidBdevCreateUUID())
 				return err
 			},
 		)
@@ -2731,7 +2783,7 @@ func (e *Engine) completeBackupRestore(spdkClient *spdkclient.Client, backupSnap
 	}
 
 	e.log.Infof("Creating snapshot %v for the restored volume", newSnapshotName)
-	if _, createErr := e.SnapshotCreate(spdkClient, newSnapshotName); createErr != nil {
+	if _, createErr := e.SnapshotCreate(spdkClient, newSnapshotName, ""); createErr != nil {
 		e.log.WithError(createErr).Warnf("Failed to create snapshot %v for the restored volume", newSnapshotName)
 	}
 
@@ -2963,7 +3015,7 @@ func (e *Engine) Expand(spdkClient *spdkclient.Client, size uint64) (err error) 
 
 	switch e.Frontend {
 	case types.FrontendSPDKTCPBlockdev, types.FrontendSPDKTCPNvmf:
-		cntlid := getTargetCntlid(e.NvmeTcpTarget.IP, e.NvmeTcpTarget.Port)
+		minCntlid, maxCntlid := getTargetCntlidRange(e.NvmeTcpTarget.IP, e.NvmeTcpTarget.Port, e.SharedBlock)
 		// Preserve the current ANA state across the expand. If this engine
 		// was demoted to inaccessible during a switchover, re-exposing with
 		// optimized would create a dual-write window.
@@ -2975,7 +3027,7 @@ func (e *Engine) Expand(spdkClient *spdkclient.Client, size uint64) (err error) 
 		if err != nil {
 			return errors.Wrapf(err, "invalid ANA state %q for engine target %v during expand", currentANAState, e.Name)
 		}
-		if err := e.startExposeNVMeTCPTarget(spdkClient, currentANAState, spdkANAState, cntlid); err != nil {
+		if err := e.startExposeNVMeTCPTarget(spdkClient, currentANAState, spdkANAState, minCntlid, maxCntlid); err != nil {
 			return errors.Wrapf(err, "failed to start exposing RAID bdev for engine target %v", e.Name)
 		}
 	case types.FrontendEmpty:
@@ -3973,4 +4025,330 @@ func (e *Engine) ensureNvmeTcpTargetForRestore(spdkClient *spdkclient.Client, su
 		return errors.Wrap(err, "failed to create temporary NVMe-TCP target for backup restore")
 	}
 	return nil
+}
+
+// getRaidBdevCreateUUID returns the UUID for creating the RAID bdev. A shared
+// block engine uses a UUID derived from the volume name, since SPDK refuses to
+// restore a ptpl file that was saved for a bdev with a different UUID. Other
+// engines let SPDK generate one.
+func (e *Engine) getRaidBdevCreateUUID() string {
+	if !e.SharedBlock {
+		return ""
+	}
+	return getStableVolumeRaidUUID(e.VolumeName)
+}
+
+// getReservationPtplFile returns the file SPDK persists the NVMe reservation
+// state of a shared block engine target to, or empty for other engines. Each
+// epoch of the state has its own file.
+func (e *Engine) getReservationPtplFile() string {
+	if !e.SharedBlock || e.sharedBlockState.metadataDir == "" {
+		return ""
+	}
+	return filepath.Join(e.sharedBlockState.metadataDir, reservationPtplSubDir, e.VolumeName, fmt.Sprintf("%d.json", e.sharedBlockState.reservationEpoch))
+}
+
+// prepareReservationPtplFile gets the ptpl file of a shared block engine target
+// ready for SPDK to restore before the namespace is added.
+//
+// SPDK writes the file first and the state is synced to the cluster later, so a
+// valid local file of the current epoch is never older than the state the
+// manager passes, and is kept. It exists if the engine is recreated on the same
+// node, e.g., after an instance manager crash. Otherwise, the file is rebuilt
+// from the state the manager passes. Files of other epochs are stale and
+// removed.
+//
+// The state the manager passes is only used once. When the target is exposed
+// again, e.g., by an expansion, the local file is the latest state, and an empty
+// or missing file means the hosts persisted nothing.
+func (e *Engine) prepareReservationPtplFile(ptplFile string) (err error) {
+	defer func() {
+		if err == nil {
+			e.sharedBlockState.reservationSeed = nil
+		}
+	}()
+
+	bdevUUID := getStableVolumeRaidUUID(e.VolumeName)
+
+	if err := e.removeStaleReservationPtplFiles(ptplFile); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(ptplFile)
+	if err != nil && !os.IsNotExist(err) {
+		return errors.Wrapf(err, "failed to read reservation ptpl file %s for engine %s", ptplFile, e.Name)
+	}
+	if err == nil {
+		_, parseErr := parseReservationPtplData(data, bdevUUID)
+		if parseErr == nil {
+			e.log.Infof("Restoring reservation state of epoch %v from local ptpl file %s", e.sharedBlockState.reservationEpoch, ptplFile)
+			return nil
+		}
+		// A partial file left by a crash in the middle of a write is empty or
+		// invalid. Fall back to the synced state, which is better than
+		// discarding the state.
+		e.log.WithError(parseErr).Warnf("Replacing local reservation ptpl file %s that SPDK cannot restore with the synced state", ptplFile)
+	}
+
+	seed, err := reservationStateToPtplData(e.sharedBlockState.reservationSeed, bdevUUID)
+	if err != nil {
+		return errors.Wrapf(err, "failed to encode reservation state for engine %s", e.Name)
+	}
+	if seed != nil {
+		if _, err := parseReservationPtplData(seed, bdevUUID); err != nil {
+			e.log.WithError(err).Warn("Discarding synced reservation state that SPDK cannot restore")
+			seed = nil
+		}
+	}
+	if seed == nil {
+		if err := os.Remove(ptplFile); err != nil && !os.IsNotExist(err) {
+			return errors.Wrapf(err, "failed to remove reservation ptpl file %s for engine %s", ptplFile, e.Name)
+		}
+		return nil
+	}
+
+	if err := writeFileAtomically(ptplFile, seed); err != nil {
+		return errors.Wrapf(err, "failed to write reservation ptpl file %s for engine %s", ptplFile, e.Name)
+	}
+	e.log.Infof("Restoring reservation state of epoch %v with %d registrants from the synced state", e.sharedBlockState.reservationEpoch, len(e.sharedBlockState.reservationSeed.Registrants))
+	return nil
+}
+
+// removeStaleReservationPtplFiles removes the files of the volume other than
+// the ptpl file of the current epoch.
+func (e *Engine) removeStaleReservationPtplFiles(ptplFile string) error {
+	entries, err := os.ReadDir(filepath.Dir(ptplFile))
+	if err != nil {
+		return errors.Wrapf(err, "failed to list reservation ptpl files for engine %s", e.Name)
+	}
+	for _, entry := range entries {
+		file := filepath.Join(filepath.Dir(ptplFile), entry.Name())
+		if file == ptplFile {
+			continue
+		}
+		if err := os.RemoveAll(file); err != nil {
+			return errors.Wrapf(err, "failed to remove stale reservation ptpl file %s for engine %s", file, e.Name)
+		}
+		e.log.Infof("Removed stale reservation ptpl file %s", file)
+	}
+	return nil
+}
+
+// getReservationState returns the reservation state SPDK persists in the ptpl
+// file of a shared block engine target, or nil if it is unknown, e.g., the
+// engine is not a shared block engine or SPDK is writing the file.
+func (e *Engine) getReservationState() *spdkrpc.ReservationState {
+	ptplFile := e.getReservationPtplFile()
+	if ptplFile == "" {
+		return nil
+	}
+
+	info, err := os.Stat(ptplFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &spdkrpc.ReservationState{Epoch: e.sharedBlockState.reservationEpoch, Registrants: []*spdkrpc.ReservationRegistrant{}}
+		}
+		return nil
+	}
+	data, err := os.ReadFile(ptplFile)
+	if err != nil {
+		return nil
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		// SPDK empties the file when a host registers without persistence.
+		if time.Since(info.ModTime()) < reservationPtplEmptyFileMinAge {
+			return nil
+		}
+		return &spdkrpc.ReservationState{Epoch: e.sharedBlockState.reservationEpoch, Registrants: []*spdkrpc.ReservationRegistrant{}}
+	}
+	record, err := parseReservationPtplData(data, getStableVolumeRaidUUID(e.VolumeName))
+	if err != nil {
+		return nil
+	}
+	return reservationPtplRecordToState(record, e.sharedBlockState.reservationEpoch)
+}
+
+// RegisterFrontend records how to suspend an engine frontend of the shared
+// block engine. An engine frontend registers before it connects to the engine
+// target and periodically afterwards, so that the registration survives an
+// engine restart and follows an engine frontend address change. It is rejected
+// while the engine frontends are suspended, so that no host can connect then.
+func (e *Engine) RegisterFrontend(name, address, hostNQN string) error {
+	if !e.SharedBlock {
+		return errors.Errorf("engine %s is not a shared block engine", e.Name)
+	}
+
+	changed, err := e.sharedBlockState.frontends.register(name, address, hostNQN)
+	if err != nil {
+		return errors.Wrapf(err, "cannot register engine frontend %s to engine %s", name, e.Name)
+	}
+	if changed {
+		e.log.Infof("Registered engine frontend %s at %s with host NQN %s", name, address, hostNQN)
+	}
+	return nil
+}
+
+// withSharedBlockFrontendsSuspended runs work while the engine frontends on
+// all hosts are suspended, so that no host can write to the engine target.
+// callerName is the engine frontend requesting the work, which has suspended
+// itself, or empty if there is none. Before running work, it verifies that
+// every host connected to the engine target belongs to a suspended engine
+// frontend, and fails otherwise. work should acquire the engine lock by itself,
+// as it is not held while the engine frontends are called.
+func (e *Engine) withSharedBlockFrontendsSuspended(spdkClient *spdkclient.Client, callerName string, noFlush, noLockFS bool, work func() error) (err error) {
+	frontends, err := e.sharedBlockState.frontends.startFreezing()
+	if err != nil {
+		return errors.Wrapf(err, "engine %s", e.Name)
+	}
+	defer e.sharedBlockState.frontends.stopFreezing()
+
+	e.RLock()
+	nqn := ""
+	if e.NvmeTcpTarget != nil {
+		nqn = e.NvmeTcpTarget.Nqn
+	}
+	e.RUnlock()
+	if nqn == "" {
+		// No host can write without the engine target.
+		return work()
+	}
+
+	connectedHosts, err := getConnectedHostNQNs(spdkClient, nqn)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get the hosts connected to engine %s before suspending engine frontends", e.Name)
+	}
+
+	frozenHosts := map[string]bool{}
+	if caller := frontends[callerName]; caller != nil {
+		frozenHosts[caller.hostNQN] = true
+	}
+	delete(frontends, callerName)
+
+	suspended, err := e.suspendFrontends(frontends, connectedHosts, noFlush, noLockFS)
+	defer e.resumeFrontends(suspended)
+	if err != nil {
+		return err
+	}
+	for _, frontend := range suspended {
+		frozenHosts[frontend.hostNQN] = true
+	}
+
+	// A host may have connected while the engine frontends were being suspended.
+	connectedHosts, err = getConnectedHostNQNs(spdkClient, nqn)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get the hosts connected to engine %s after suspending engine frontends", e.Name)
+	}
+	for hostNQN := range connectedHosts {
+		if !frozenHosts[hostNQN] {
+			return errors.Errorf("host %s is connected to engine %s without a suspended engine frontend", hostNQN, e.Name)
+		}
+	}
+
+	return work()
+}
+
+// suspendFrontends suspends the engine frontends in parallel and returns the
+// suspended ones. An engine frontend that does not exist or cannot be reached
+// is skipped only if its host is not connected to the engine target, as it
+// cannot write then. Any other failure fails the suspension, and the caller
+// should resume the returned engine frontends.
+func (e *Engine) suspendFrontends(frontends map[string]*registeredFrontend, connectedHosts map[string]bool, noFlush, noLockFS bool) (map[string]*registeredFrontend, error) {
+	var (
+		lock      sync.Mutex
+		wg        sync.WaitGroup
+		suspended = map[string]*registeredFrontend{}
+		failures  []string
+	)
+	for name, frontend := range frontends {
+		wg.Add(1)
+		go func(name string, frontend *registeredFrontend) {
+			defer wg.Done()
+
+			err := e.callFrontend(frontend.address, func(c *client.SPDKClient) error {
+				return c.EngineFrontendSuspendWithOptions(name, noFlush, noLockFS)
+			})
+
+			lock.Lock()
+			defer lock.Unlock()
+			if err == nil {
+				suspended[name] = frontend
+				return
+			}
+			if isFrontendGoneError(err) && !connectedHosts[frontend.hostNQN] {
+				e.log.WithError(err).Warnf("Skipped suspending engine frontend %s at %s, as its host %s is not connected", name, frontend.address, frontend.hostNQN)
+				return
+			}
+			failures = append(failures, errors.Wrapf(err, "failed to suspend engine frontend %s at %s", name, frontend.address).Error())
+		}(name, frontend)
+	}
+	wg.Wait()
+
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return suspended, errors.Errorf("failed to suspend engine frontends of engine %s: %v", e.Name, failures)
+	}
+	return suspended, nil
+}
+
+// resumeFrontends resumes the engine frontends in parallel. A failure is only
+// logged, as the result of the work does not depend on it.
+func (e *Engine) resumeFrontends(frontends map[string]*registeredFrontend) {
+	var wg sync.WaitGroup
+	for name, frontend := range frontends {
+		wg.Add(1)
+		go func(name string, frontend *registeredFrontend) {
+			defer wg.Done()
+
+			if err := e.callFrontend(frontend.address, func(c *client.SPDKClient) error {
+				return c.EngineFrontendResume(name)
+			}); err != nil {
+				e.log.WithError(err).Errorf("Failed to resume engine frontend %s at %s", name, frontend.address)
+			}
+		}(name, frontend)
+	}
+	wg.Wait()
+}
+
+func (e *Engine) callFrontend(address string, call func(*client.SPDKClient) error) error {
+	newServiceClient := e.newServiceClient
+	if newServiceClient == nil {
+		newServiceClient = GetServiceClient
+	}
+	c, err := newServiceClient(address)
+	if err != nil {
+		return grpcstatus.Errorf(grpccodes.Unavailable, "failed to create SPDK client for %s: %v", address, err)
+	}
+	defer func() {
+		if errClose := c.Close(); errClose != nil {
+			e.log.WithError(errClose).Warnf("Failed to close SPDK client for %s", address)
+		}
+	}()
+	return call(c)
+}
+
+// buildSharedBlockReplicaAddFrontendSuspendResumeWrapper builds the
+// replicaAddFrontendSuspendResumeWrapper of a replica add of the shared block
+// engine. The caller suspends the engine frontends on all hosts during the
+// synchronous setup, so the snapshot step only runs the work. Like
+// buildGRPCReplicaAddFrontendSuspendResumeWrapper, the finish step suspends
+// them, and proceeds without the suspension if it fails. getSPDKClient returns
+// the current SPDK client, as the finish step runs after the shallow copy,
+// which may outlive the client of the request.
+func (e *Engine) buildSharedBlockReplicaAddFrontendSuspendResumeWrapper(getSPDKClient func() *spdkclient.Client) replicaAddFrontendSuspendResumeWrapper {
+	return func(work func() error, suspendRequired bool) error {
+		if suspendRequired {
+			return work()
+		}
+
+		workStarted := false
+		err := e.withSharedBlockFrontendsSuspended(getSPDKClient(), "", true, true, func() error {
+			workStarted = true
+			return work()
+		})
+		if workStarted {
+			return err
+		}
+		e.log.WithError(err).Warn("Failed to suspend engine frontends before replica add work, proceeding without suspension")
+		return work()
+	}
 }

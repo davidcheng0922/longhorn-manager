@@ -39,8 +39,13 @@ func (s *Server) EngineCreate(ctx context.Context, req *spdkrpc.EngineCreateRequ
 	}
 
 	if e == nil {
-		s.engineMap[req.Name] = NewEngine(req.Name, req.VolumeName, req.Frontend, req.SpecSize, s.updateChs[types.InstanceTypeEngine], req.SnapshotMaxCount, s.newServiceClient)
-		e = s.engineMap[req.Name]
+		e = NewEngine(req.Name, req.VolumeName, req.Frontend, req.SpecSize, s.updateChs[types.InstanceTypeEngine], req.SnapshotMaxCount, s.newServiceClient,
+			req.SharedBlock, s.metadataDir)
+		if req.SharedBlock && req.Reservation != nil {
+			e.sharedBlockState.reservationEpoch = req.Reservation.Epoch
+			e.sharedBlockState.reservationSeed = req.Reservation
+		}
+		s.engineMap[req.Name] = e
 	}
 
 	spdkClient := s.spdkClient
@@ -289,6 +294,29 @@ func (s *Server) EngineSetTargetListenerANAState(ctx context.Context, req *spdkr
 	return &emptypb.Empty{}, nil
 }
 
+func (s *Server) EngineRegisterFrontend(ctx context.Context, req *spdkrpc.EngineRegisterFrontendRequest) (ret *emptypb.Empty, err error) {
+	if req.Name == "" || req.FrontendName == "" || req.FrontendAddress == "" || req.HostNqn == "" {
+		return nil, grpcstatus.Error(grpccodes.InvalidArgument, "engine name, frontend name, frontend address and host NQN are required")
+	}
+
+	s.RLock()
+	e := s.engineMap[req.Name]
+	s.RUnlock()
+
+	if e == nil {
+		return nil, grpcstatus.Errorf(grpccodes.NotFound, "cannot find engine %v for engine frontend registration", req.Name)
+	}
+
+	if err := e.RegisterFrontend(req.FrontendName, req.FrontendAddress, req.HostNqn); err != nil {
+		if errors.Is(err, ErrSharedBlockFrontendsFreezing) {
+			return nil, grpcstatus.Error(grpccodes.Unavailable, err.Error())
+		}
+		return nil, grpcstatus.Error(grpccodes.FailedPrecondition, err.Error())
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
 // EngineGet returns a specific engine
 func (s *Server) EngineGet(ctx context.Context, req *spdkrpc.EngineGetRequest) (ret *spdkrpc.Engine, err error) {
 	s.RLock()
@@ -390,7 +418,9 @@ func (s *Server) EngineReplicaAdd(ctx context.Context, req *spdkrpc.EngineReplic
 	}
 
 	var frontendSuspendResumeWrapper replicaAddFrontendSuspendResumeWrapper
-	if efName != "" {
+	if e.SharedBlock {
+		frontendSuspendResumeWrapper = e.buildSharedBlockReplicaAddFrontendSuspendResumeWrapper(s.getSPDKClient)
+	} else if efName != "" {
 		log := logrus.WithFields(logrus.Fields{
 			"engineName":     req.EngineName,
 			"replicaName":    req.ReplicaName,
@@ -405,7 +435,18 @@ func (s *Server) EngineReplicaAdd(ctx context.Context, req *spdkrpc.EngineReplic
 		linkedCloneSrcEngineName = req.LinkedCloneSource.EngineName
 		linkedCloneSrcEngineAddress = req.LinkedCloneSource.EngineAddress
 	}
-	if err := e.ReplicaAdd(spdkClient, req.ReplicaName, req.ReplicaAddress, req.FastSync, linkedCloneSrcReplicaName, linkedCloneSrcEngineName, linkedCloneSrcEngineAddress, frontendSuspendResumeWrapper); err != nil {
+	replicaAdd := func() error {
+		return e.ReplicaAdd(spdkClient, req.ReplicaName, req.ReplicaAddress, req.FastSync, linkedCloneSrcReplicaName, linkedCloneSrcEngineName, linkedCloneSrcEngineAddress, frontendSuspendResumeWrapper)
+	}
+	if e.SharedBlock {
+		// The engine frontends on all hosts, including the requesting one, are
+		// suspended during the synchronous setup, and the engine lock is not
+		// held while they are called.
+		err = e.withSharedBlockFrontendsSuspended(spdkClient, "", true, true, replicaAdd)
+	} else {
+		err = replicaAdd()
+	}
+	if err != nil {
 		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to add replica %s to engine %s: %v", req.ReplicaName, req.EngineName, err)
 	}
 	return &emptypb.Empty{}, nil
@@ -489,7 +530,7 @@ func (s *Server) EngineSnapshotCreate(ctx context.Context, req *spdkrpc.Snapshot
 		return nil, grpcstatus.Errorf(grpccodes.NotFound, "cannot find engine %v for snapshot creation", req.Name)
 	}
 
-	snapshotName, err := e.SnapshotCreate(spdkClient, req.SnapshotName)
+	snapshotName, err := e.SnapshotCreate(spdkClient, req.SnapshotName, req.EngineFrontendName)
 	return &spdkrpc.SnapshotResponse{SnapshotName: snapshotName}, err
 }
 
@@ -718,6 +759,7 @@ func (s *Server) EngineBackupRestore(ctx context.Context, req *spdkrpc.EngineBac
 		types.DefaultUblkNumberOfQueue,
 		throwawayUpdateCh,
 		s.newServiceClient,
+		false,
 	)
 
 	logrus.WithFields(logrus.Fields{

@@ -71,6 +71,10 @@ var (
 	backingImageExposeSnapshotLvolBdev       = exposeSnapshotLvolBdev
 	backingImageStopExposeBdev               = func(cli *spdkclient.Client, nqn string) error { return cli.StopExposeBdev(nqn) }
 	backingImageDiscoverAndConnectNVMeTarget = discoverAndConnectNVMeTarget
+
+	sharedBlockNvmfSubsystemGetControllers = func(cli *spdkclient.Client, nqn string) ([]spdktypes.NvmfSubsystemController, error) {
+		return cli.NvmfSubsystemGetControllers(nqn, "")
+	}
 )
 
 var _ backingImageServiceClient = (*lhclient.SPDKClient)(nil)

@@ -97,6 +97,8 @@ type EngineCreateRequest struct {
 	UpgradeRequired   bool
 	SalvageRequested  bool
 	SnapshotMaxCount  int
+	SharedBlock       bool
+	Reservation       *api.ReservationState
 }
 
 type EngineFrontendCreateRequest struct {
@@ -106,6 +108,7 @@ type EngineFrontendCreateRequest struct {
 	NvmeTcpNrIoQueues int
 	TargetAddress     string
 	EngineName        string
+	SharedBlock       bool
 }
 
 type ReplicaCreateRequest struct {
@@ -186,6 +189,8 @@ func (c *InstanceServiceClient) InstanceCreate(req *InstanceCreateRequest) (*api
 				SnapshotMaxCount:  int32(req.Engine.SnapshotMaxCount),
 				UblkQueueDepth:    int32(req.Engine.UblkQueueDepth),
 				UblkNumberOfQueue: int32(req.Engine.UblkNumberOfQueue),
+				SharedBlock:       req.Engine.SharedBlock,
+				Reservation:       api.ReservationStateToRPC(req.Engine.Reservation),
 			}
 		case types.InstanceTypeEngineFrontend:
 			spdkInstanceSpec = &rpc.SpdkInstanceSpec{
@@ -194,6 +199,7 @@ func (c *InstanceServiceClient) InstanceCreate(req *InstanceCreateRequest) (*api
 				UblkQueueDepth:    int32(req.EngineFrontend.UblkQueueDepth),
 				UblkNumberOfQueue: int32(req.EngineFrontend.UblkNumberOfQueue),
 				NvmeTcpNrIoQueues: int32(req.EngineFrontend.NvmeTcpNrIoQueues),
+				SharedBlock:       req.EngineFrontend.SharedBlock,
 			}
 		case types.InstanceTypeReplica:
 			spdkInstanceSpec = &rpc.SpdkInstanceSpec{
